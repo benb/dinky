@@ -6,12 +6,14 @@ async function basicDatabase() {
   await store.open(':memory:');
   await store.database.execAsync('DROP TABLE IF EXISTS people');
   const people = await store.getCollection('people');
-  await people.insert({firstname: "Maggie", lastname: "Simpson"});
-  await people.insert({firstname: "Bart", lastname: "Simpson"});
-  await people.insert({firstname: "Marge", lastname: "Simpson"});
-  await people.insert({firstname: "Homer", lastname: "Simpson"});
-  await people.insert({firstname: "Lisa", lastname: "Simpson"});
-  await people.insert({firstname: "Lisa", lastname: "Kudrow"});
+  people.insertMany([
+   {firstname: "Maggie", lastname: "Simpson"},
+   {firstname: "Bart", lastname: "Simpson"},
+   {firstname: "Marge", lastname: "Simpson"},
+   {firstname: "Homer", lastname: "Simpson"},
+   {firstname: "Lisa", lastname: "Simpson"},
+   {firstname: "Lisa", lastname: "Kudrow"}
+  ]);
   return store;
 }
 

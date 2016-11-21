@@ -64,9 +64,10 @@ export class Collection {
   initialized: boolean;
 
   async insertMany(data: any[]) {
+    await this.store.database.runAsync('BEGIN TRANSACTION');
+    await Promise.all(data.map(x => this.insert(x)));
+    await this.store.database.runAsync('COMMIT');
   }
-
-
 
   constructor(store: Store, name: string) {
     this.store = store;
