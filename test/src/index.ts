@@ -4,6 +4,7 @@ import { test } from 'ava';
 async function basicDatabase() {
   const store = new Store();
   await store.open(':memory:');
+  await store.database.execAsync('DROP TABLE IF EXISTS people');
   const people = await store.getCollection('people');
   await people.insert({firstname: "Maggie", lastname: "Simpson"});
   await people.insert({firstname: "Bart", lastname: "Simpson"});
@@ -60,4 +61,28 @@ test("Queries", async (t) => {
   const lisaSimpsons = await people.find({firstname: "Lisa", lastname: "Simpson"});
   t.is(lisas.length, 2, "Only one Lisa Simpson");
 
+  const lisasAndSimpsons = await people.find({'$or': [{firstname: "Lisa"}, {lastname: "Simpson"}]});
+  t.is(lisasAndSimpsons.length, 6, "Five Simpsons and a Kudrow");
+
+  const nonSimpsons = await people.find({lastname: {$not: "Simpson"}});
+  t.is(nonSimpsons.length, 1, "One non-Simpson");
 });
+
+test("Updates", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection('people');
+  await people.createIndex({firstname: 1});
+  await people.createIndex({lastname: 1});
+
+  await people.update({firstname: "Lisa", lastname: "Simpson"}, {$set: {lastname: "Van Houten"} });
+  await people.update({firstname: "Bart", lastname: "Simpson"}, {$set: {lastname: "Van Houten"} });
+
+  const peeps = await people.find();
+  console.log("PEEPS", peeps);
+
+  t.is((await people.find({lastname: "Van Houten"})).length, 2, "Two Van Houtens");
+
+
+});
+
+
