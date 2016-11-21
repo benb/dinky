@@ -32,6 +32,8 @@ export interface UpdateSpec {
 class Query {
   subQueries: (Query | [string, any])[];
   operator: "AND" | "OR"
+  otherTable?: string
+
   constructor(subQueries: (Query | [string, any])[], operator?: "AND" | "OR") {
     this.subQueries = subQueries;
     this.operator = operator || "AND";
@@ -56,12 +58,26 @@ class Query {
       }
     }).reduce((x,y) => x.concat(y), []);
   }
+
+  join(): string[] {
+    let joins: string[] = [];
+    if (this.otherTable) {
+      joins.push(this.otherTable);
+    }
+    this.subQueries.forEach( q => {
+      if (q instanceof Query) {
+        joins = joins.concat(q.join());
+      }
+    });
+    return joins;
+  }
 }
 
 export class Collection {
   store: Store;
   name: string;
-  initialized: boolean;
+  initializedStatus: "uninitialized" | "initializing" | "initialized";
+  arrayIndexes: Map<string, string>;
 
   async insertMany(data: any[]) {
     await this.store.database.runAsync('BEGIN TRANSACTION');
@@ -72,12 +88,24 @@ export class Collection {
   constructor(store: Store, name: string) {
     this.store = store;
     this.name = name;
+    this.arrayIndexes = new Map<string, string>();
+    this.initializedStatus = "uninitialized";
+  }
+
+  async refreshArrayIndexes() {
+    await this.store.database.runAsync(`CREATE TABLE IF NOT EXISTS collection_array_indexes (sourceTable TEXT, keypath TEXT, indexTable TEXT);`);
+    const arrayIndexes = await this.store.database.allAsync("SELECT * from collection_array_indexes WHERE sourceTable = ?", this.name);
+    for (let index of arrayIndexes) {
+      this.arrayIndexes.set(index.keypath, index.indexTable);
+    }
   }
 
   async initialize() {
-    if (!this.initialized) {
-      await this.store.database.runAsync(`CREATE TABLE IF NOT EXISTS ${this.name} (id TEXT PRIMARY KEY, document JSON);`);
-      this.initialized = true;
+    if (this.initializedStatus == "uninitialized") {
+      this.initializedStatus = "initializing";
+      await this.store.database.runAsync(`CREATE TABLE IF NOT EXISTS ${this.name} (_id TEXT PRIMARY KEY, document JSON);`);
+      await this.refreshArrayIndexes();
+      this.initializedStatus = "initialized";
     }
   }
 
@@ -94,13 +122,23 @@ export class Collection {
     await this.store.database.runAsync(sql);
   }
 
-  async createArrayIndex(field: string) {
-  //  this.store.database
-      /*
-         CREATE TRIGGER people_favourite_colours_trigger AFTER INSERT ON people¬
-           BEGIN¬
-           INSERT INTO people_favourite_colours SELECT NEW.id, json_each.value from json_each(NEW.document, "$.colours");¬
-         END;¬*/
+  async ensureArrayIndex(key: string) {
+    if (this.arrayIndexes.has(key)) {
+      return;
+    }
+    await this.store.database.runAsync('BEGIN TRANSACTION');
+    const tableName = `${this.name}_${key}`;
+    await this.store.database.runAsync(`CREATE TABLE '${tableName}' AS SELECT _id, json_each.* from ${this.name}, json_each(document, '$.${key}')`);
+    const sql = `CREATE TRIGGER '${tableName}_insert_trigger' AFTER INSERT ON ${this.name}
+                                          BEGIN
+                                            INSERT INTO ${tableName} SELECT NEW._id, json_each from json_each(NEW.document. '$.${key}');
+                                          END;`;
+    //console.log(sql);
+    await this.store.database.runAsync(sql);
+    //TODO update delete
+    await this.store.database.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
+    await this.store.database.runAsync('COMMIT');
+    this.arrayIndexes.set(key, tableName);
   }
 
   private parseComponent(component: any) : ([string, any] | Query)[] {
@@ -116,7 +154,7 @@ export class Collection {
         return this.parseKeyValue(key, component[key]);
       });
     if (component['_id']) {
-      queries.push([`id IS ?`, component['_id']]);
+      queries.push([`_id IS ?`, component['_id']]);
     }
     return queries;
   }
@@ -136,8 +174,24 @@ export class Collection {
       if (typeof value == 'string' || typeof value == 'number') {
         return [`json_extract(document, '$.${key}') IS ?`, value];
       } else if (Array.isArray(value)) {
-        //todo allow array queries
-        throw new Error("Unsupported query " + value);
+        //console.log(this.arrayIndexes, key);
+        if (this.arrayIndexes.has(key)) { //indexed
+          const table = this.arrayIndexes.get(key);
+          const qMarks = "?, ".repeat(value.length -1) + "?";
+          const q = new Query([[`${table}.value IN (${qMarks})`, value]]);
+          q.otherTable = `INNER JOIN ${table} ON ${table}._id = ${this.name}._id`;
+          //console.log(q);
+          return q;
+        } else { //unindexed
+          const identifier = 'foo'; //TODO 
+          const tableFunc = `json_each(document, '$.${key}') AS ${identifier}`;
+
+          const qMarks = "?, ".repeat(value.length -1) + "?";
+          const q = new Query([[`${identifier}.value IN (${qMarks})`, value]]);
+          q.otherTable = ", " + tableFunc;
+          //console.log(q);
+          return q;
+        }
       } else if (value['$not'] || value['$NOT']) {
         const finalVal = value['$not'] || value['$NOT'];
         if (typeof finalVal == 'string' || typeof finalVal== 'number') {
@@ -158,14 +212,20 @@ export class Collection {
       const query = new Query(this.parseComponent(q));
       const whereSQL = query.toString();
       const args = query.values();
-      docs = await this.store.database.allAsync(`SELECT * from ${this.name} WHERE ${whereSQL}`, args);
+      let joins = query.join().join(" ");
+      if (joins) {
+        joins = joins;
+      }
+      const sql = `SELECT DISTINCT ${this.name}._id, ${this.name}.document from ${this.name} ${joins} WHERE ${whereSQL}`;
+      //console.log(sql, args);
+      docs = await this.store.database.allAsync(sql, args);
     } else {
       docs = await this.store.database.allAsync(`SELECT * from ${this.name}`);
     }
 
     return docs.map(doc => {
       const parsed = JSON.parse(doc.document);
-      parsed._id = doc.id;
+      parsed._id = doc._id;
       return parsed;
     });
   }
@@ -235,7 +295,7 @@ export class Collection {
     const allValues = values.concat(query.values());
 
 
-    console.log(`UPDATE ${this.name} SET document = ${updateSQL} ${whereString}`, allValues);
+    //console.log(`UPDATE ${this.name} SET document = ${updateSQL} ${whereString}`, allValues);
     await this.store.database.runAsync(`UPDATE ${this.name} SET document = ${updateSQL} ${whereString}`, allValues);
 
   }

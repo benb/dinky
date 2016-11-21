@@ -7,11 +7,11 @@ async function basicDatabase() {
   await store.database.execAsync('DROP TABLE IF EXISTS people');
   const people = await store.getCollection('people');
   people.insertMany([
-   {firstname: "Maggie", lastname: "Simpson"},
-   {firstname: "Bart", lastname: "Simpson"},
+   {firstname: "Maggie", lastname: "Simpson", hobbies: ["dummies"]},
+   {firstname: "Bart", lastname: "Simpson", hobbies: ["skateboarding", "boxcar racing", "annoying Homer"]},
    {firstname: "Marge", lastname: "Simpson"},
-   {firstname: "Homer", lastname: "Simpson"},
-   {firstname: "Lisa", lastname: "Simpson"},
+   {firstname: "Homer", lastname: "Simpson", hobbies: ["drinking", "gambling", "boxcar racing"]},
+   {firstname: "Lisa", lastname: "Simpson", hobbies: ["tai chi", "chai tea", "annoying Homer"]},
    {firstname: "Lisa", lastname: "Kudrow"}
   ]);
   return store;
@@ -80,11 +80,24 @@ test("Updates", async (t) => {
   await people.update({firstname: "Bart", lastname: "Simpson"}, {$set: {lastname: "Van Houten"} });
 
   const peeps = await people.find();
-  console.log("PEEPS", peeps);
 
   t.is((await people.find({lastname: "Van Houten"})).length, 2, "Two Van Houtens");
 
 
 });
 
+test("Arrays", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection('people');
 
+  await people.ensureArrayIndex('hobbies');
+  t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
+
+  const homerAnnoyers = await people.find({hobbies: ["annoying Homer"]});
+  t.is(homerAnnoyers.length, 2, "Correct result count");
+  t.deepEqual(homerAnnoyers.map(x => x.firstname).sort(), ["Bart", "Lisa"], "Correct objects");
+
+  const racersAndAnnoyers = await people.find({hobbies: ["annoying Homer", "boxcar racing"]});
+  t.is(racersAndAnnoyers.length, 3, "Correct result count");
+  t.deepEqual(racersAndAnnoyers.map(x => x.firstname).sort(), ["Bart", "Homer", "Lisa"], "Correct objects");
+});
