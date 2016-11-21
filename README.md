@@ -1,3 +1,2 @@
-## Scaffold for TypeScript npm modules
+## UNSQlite
 
-Just clone and edit package.json / tsconfig.json to taste.

@@ -1,7 +1,7 @@
 {
-  "name": "scaffold",
-  "version": "0.0.0",
-  "description": "",
+  "name": "unsqlite",
+  "version": "0.0.1",
+  "description": "Schemaless JSON document store backed by SQLite",
   "main": "dist/index.js",
   "typings": "dist/index",
   "scripts": {
@@ -26,5 +26,9 @@
     "temp": "^0.8.3",
     "typescript": "^2.0.3"
   },
-  "private": true
+  "dependencies": {
+    "@types/uuid": "^2.0.29",
+    "squeamish": "0.0.1",
+    "uuid": "^3.0.0"
+  }
 }
