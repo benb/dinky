@@ -6,7 +6,8 @@
   "typings": "dist/index",
   "scripts": {
     "prepublish": "tsc",
-    "test": "tsc -p test/tsconfig.json && ava"
+    "test": "tsc -p test/tsconfig.json && ava",
+    "bat": "tsc && npm tst"
   },
   "ava": {
     "files": [

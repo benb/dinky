@@ -1,9 +1,14 @@
+import * as sqlite from 'sqlite3';
 import { Store } from '../../';
 import { test } from 'ava';
 
-async function basicDatabase() {
+async function basicDatabase(logging = false) {
   const store = new Store();
   await store.open(':memory:');
+  if (logging) {
+    store.database.on('trace', console.log);
+  }
+
   await store.database.execAsync('DROP TABLE IF EXISTS people');
   const people = await store.getCollection('people');
   people.insertMany([
@@ -86,6 +91,31 @@ test("Updates", async (t) => {
 
 });
 
+test("Increment", async (t) => {
+  const store = new Store();
+  await store.open(':memory:');
+  const people = await store.getCollection('people');
+
+  await people.insert({firstname: "Lisa", lastname: "Simpson", age: 8});
+  await people.insert({firstname: "Bart", lastname: "Simpson", age: 10});
+  let bart = await people.findOne({firstname:"Bart"});
+  let lisa = await people.findOne({firstname:"Lisa"});
+  
+  t.is(bart.age, 10, "Correct value in document");
+  t.is(lisa.age, 8, "Correct value in document");
+
+  await people.update({firstname: "Bart", lastname: "Simpson"}, {$inc: {age: 1} });
+  bart = await people.findOne({firstname:"Bart"});
+
+  t.is(bart.age, 11, "Correctly incremented");
+
+  await people.update({firstname: "Bart", lastname: "Simpson"}, {$inc: {age: -10} });
+  bart = await people.findOne({firstname:"Bart"});
+
+  t.is(bart.age, 1, "Correctly incremented");
+
+});
+
 test("Arrays", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection('people');
@@ -100,4 +130,24 @@ test("Arrays", async (t) => {
   const racersAndAnnoyers = await people.find({hobbies: ["annoying Homer", "boxcar racing"]});
   t.is(racersAndAnnoyers.length, 3, "Correct result count");
   t.deepEqual(racersAndAnnoyers.map(x => x.firstname).sort(), ["Bart", "Homer", "Lisa"], "Correct objects");
+});
+
+test.only("Array Push", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection('people');
+
+  await people.ensureArrayIndex('hobbies');
+  t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
+
+  let homer: any;
+  for (let x of ["TV", "Beer", "Go Crazy"]) {
+    homer = await people.findOne({'firstname': 'Homer'});
+    t.is(homer.hobbies.indexOf(x), -1, "Should not have hobby to start");
+    await people.update({'firstname': 'Homer'}, {'$push': {'hobbies': x}});
+    homer = await people.findOne({'firstname': 'Homer'});
+    t.not(homer.hobbies.indexOf(x), -1, "Should add to array");
+  }
+
+  const tvWatcher = await people.findOne( {hobbies: {'$in' : ['TV'] } });
+  t.is(tvWatcher.firstname, "Homer", "Can retrieve based on array query");
 });
