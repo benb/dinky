@@ -73,30 +73,62 @@ class Query {
   }
 }
 
+export type Transaction = {handle: Database, name?: string};
+
 export class Collection {
   store: Store;
   name: string;
   initializedStatus: "uninitialized" | "initializing" | "initialized";
   arrayIndexes: Map<string, string>;
 
-  private async beginTransaction() {
-    const db = this.store.database;
-    await db.execAsync('BEGIN TRANSACTION');
-    return db;
+  private async getHandleFromPool() {
+    //todo REAL POOL
+    return this.store.database;
   }
 
-  private async commit(db: Database) {
-    await db.execAsync('COMMIT');
+  private getMainHandle() {
+    return this.store.database;
+  }
+
+  private returnHandleToPool(db: Database) {
+    return;
+  }
+
+  private async beginTransaction(outerTransaction?: Transaction): Promise<Transaction> {
+    if (outerTransaction) {
+      const db = outerTransaction.handle;
+      const transactionName = uuid.v4();
+      await db.execAsync(`SAVEPOINT '${transactionName}'`);
+      return {handle: db, name: transactionName};
+    } else {
+      const db = await this.getHandleFromPool();
+      await db.execAsync(`BEGIN TRANSACTION`);
+      return {handle: db};
+    }
+  }
+
+  private async commit(transaction: Transaction) {
+    if (transaction.name) {
+      await transaction.handle.execAsync(`RELEASE '${transaction.name}'`);
+    } else {
+      await transaction.handle.execAsync(`COMMIT`);
+      this.returnHandleToPool(transaction.handle);
+    }
   }
   
-  private async rollback(db: Database) {
-    await db.execAsync('ROLLBACK');
+  private async rollback(transaction: Transaction) {
+    if (transaction.name) {
+      await transaction.handle.execAsync(`ROLLBACK TO '${transaction.name}'`);
+    } else {
+      await transaction.handle.execAsync(`ROLLBACK`);
+      this.returnHandleToPool(transaction.handle);
+    }
   }
 
-  async insertMany(data: any[]) {
-    await this.store.database.runAsync('BEGIN TRANSACTION');
-    await Promise.all(data.map(x => this.insert(x)));
-    await this.store.database.runAsync('COMMIT');
+  async insertMany(data: any[], outerTransaction?: Transaction) {
+    const t = await this.beginTransaction(outerTransaction);
+    await Promise.all(data.map(x => this.insert(x, t)));
+    await this.commit(t);
   }
 
   constructor(store: Store, name: string) {
@@ -107,8 +139,8 @@ export class Collection {
   }
 
   async refreshArrayIndexes() {
-    await this.store.database.runAsync(`CREATE TABLE IF NOT EXISTS collection_array_indexes (sourceTable TEXT, keypath TEXT, indexTable TEXT);`);
-    const arrayIndexes = await this.store.database.allAsync("SELECT * from collection_array_indexes WHERE sourceTable = ?", this.name);
+    await this.getMainHandle().runAsync(`CREATE TABLE IF NOT EXISTS collection_array_indexes (sourceTable TEXT, keypath TEXT, indexTable TEXT);`);
+    const arrayIndexes = await this.getMainHandle().allAsync("SELECT * from collection_array_indexes WHERE sourceTable = ?", this.name);
     for (let index of arrayIndexes) {
       this.arrayIndexes.set(index.keypath, index.indexTable);
     }
@@ -117,16 +149,16 @@ export class Collection {
   async initialize() {
     if (this.initializedStatus == "uninitialized") {
       this.initializedStatus = "initializing";
-      await this.store.database.runAsync(`CREATE TABLE IF NOT EXISTS ${this.name} (_id TEXT PRIMARY KEY, document JSON);`);
+      await this.getMainHandle().runAsync(`CREATE TABLE IF NOT EXISTS ${this.name} (_id TEXT PRIMARY KEY, document JSON);`);
       await this.refreshArrayIndexes();
       this.initializedStatus = "initialized";
     }
   }
 
-  async createIndex(spec: {[key: string] : number}) {
+  async ensureIndex(spec: {[key: string] : number}) {
     const name = this.name + "_" + Object.keys(spec).join("_");
 
-    let sql = `CREATE INDEX ${name} on ${this.name}(`;
+    let sql = `CREATE INDEX IF NOT EXISTS ${name} on ${this.name}(`;
 
     sql = sql + Object.keys(spec).map((key: string) => {
       const order:number = spec[key];
@@ -134,43 +166,49 @@ export class Collection {
     }).join(", ");
     
     sql = sql + ");"
-    await this.store.database.runAsync(sql);
+    await this.getMainHandle().runAsync(sql);
   }
 
-  async ensureArrayIndex(key: string) {
+  async ensureArrayIndex(key: string, outerTransaction?: Transaction) {
     if (this.arrayIndexes.has(key)) {
       return;
     }
-    await this.store.database.runAsync('BEGIN TRANSACTION');
-    const tableName = `${this.name}_${key}`;
-    await this.store.database.runAsync(`CREATE TABLE '${tableName}' AS SELECT _id, json_each.* from ${this.name}, json_each(document, '$.${key}')`);
+    const t = await this.beginTransaction(outerTransaction);
 
-    await this.store.database.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_insert_trigger`);
-    let sql = `CREATE TRIGGER '${tableName}_insert_trigger' AFTER INSERT ON ${this.name}
-                                          BEGIN
-                                            INSERT INTO ${tableName} SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}'), ${this.name};
-                                          END;`;
-    await this.store.database.runAsync(sql);
+    try {
+     const tableName = `${this.name}_${key}`;
+      await t.handle.runAsync(`CREATE TABLE '${tableName}' AS SELECT _id, json_each.* from ${this.name}, json_each(document, '$.${key}')`);
 
-    await this.store.database.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_update_trigger`);
-    sql = `CREATE TRIGGER '${tableName}_update_trigger' AFTER UPDATE ON ${this.name}
-                                          BEGIN
-                                            DELETE FROM ${tableName} WHERE _id = OLD._id;
-                                            INSERT INTO ${tableName} SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}'), ${this.name};
-                                          END;`;
-    await this.store.database.runAsync(sql);
+      await t.handle.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_insert_trigger`);
+      let sql = `CREATE TRIGGER '${tableName}_insert_trigger' AFTER INSERT ON ${this.name}
+      BEGIN
+      INSERT INTO ${tableName} SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}'), ${this.name};
+      END;`;
+      await t.handle.runAsync(sql);
 
-    await this.store.database.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_delete`);
-    sql = `CREATE TRIGGER '${tableName}_delete' AFTER UPDATE ON ${this.name}
-                                          BEGIN
-                                            DELETE FROM ${tableName} WHERE _id = OLD._id;
-                                          END;`;
-    await this.store.database.runAsync(sql);
+      await t.handle.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_update_trigger`);
+      sql = `CREATE TRIGGER '${tableName}_update_trigger' AFTER UPDATE ON ${this.name}
+      BEGIN
+      DELETE FROM ${tableName} WHERE _id = OLD._id;
+      INSERT INTO ${tableName} SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}'), ${this.name};
+      END;`;
+      await t.handle.runAsync(sql);
 
-    //TODO update delete
-    await this.store.database.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
-    await this.store.database.runAsync('COMMIT');
-    this.arrayIndexes.set(key, tableName);
+      await t.handle.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_delete`);
+      sql = `CREATE TRIGGER '${tableName}_delete' AFTER UPDATE ON ${this.name}
+      BEGIN
+      DELETE FROM ${tableName} WHERE _id = OLD._id;
+      END;`;
+      await t.handle.runAsync(sql);
+
+      //TODO update delete
+      await t.handle.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
+      await this.commit(t);
+      this.arrayIndexes.set(key, tableName);
+    } catch (error) {
+      this.rollback(t);
+      throw error;
+    }
   }
 
   private parseComponent(component: any) : ([string, any] | Query)[] {
@@ -241,8 +279,9 @@ export class Collection {
     }
   }
 
-  async find(q?: any, limit?: number): Promise<any[]> {
+  async find(q?: any, limit?: number, transaction?: Transaction): Promise<any[]> {
     let docs:any[];
+    const handle = transaction ? transaction.handle : this.getMainHandle();
 
     if (q && Object.keys(q).length > 0) {
       const query = new Query(this.parseComponent(q));
@@ -254,9 +293,9 @@ export class Collection {
       }
       const sql = `SELECT DISTINCT ${this.name}._id, ${this.name}.document from ${this.name} ${joins} WHERE ${whereSQL} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
       //console.log(sql, args);
-      docs = await this.store.database.allAsync(sql, args);
+      docs = await handle.allAsync(sql, args);
     } else {
-      docs = await this.store.database.allAsync(`SELECT * from ${this.name}`);
+      docs = await handle.allAsync(`SELECT * from ${this.name}`);
     }
 
     return docs.map(doc => {
@@ -275,11 +314,14 @@ export class Collection {
     }
   }
 
-  async insert(doc: any) {
+  async insert(doc: any, transaction?: Transaction) {
+    const db = transaction ? transaction.handle : this.getMainHandle();
+
     if (!doc._id) {
       doc._id = uuid.v4();
     }
-    await this.store.database.runAsync(`INSERT INTO ${this.name} VALUES (?, ?);`, doc._id, JSON.stringify(doc, (key, value) => {
+
+    await db.runAsync(`INSERT INTO ${this.name} VALUES (?, ?);`, doc._id, JSON.stringify(doc, (key, value) => {
       if (key === '_id') {
         return undefined;
       } else {
@@ -288,7 +330,8 @@ export class Collection {
     }));
   }
 
-  async count(q: any): Promise<number> {
+  async count(q: any, transaction?: Transaction): Promise<number> {
+    const db = transaction ? transaction.handle : this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
       const query = new Query(this.parseComponent(q));
       const whereSQL = query.toString();
@@ -299,89 +342,19 @@ export class Collection {
       }
       const sql = `SELECT COUNT(*) from ${this.name} ${joins} WHERE ${whereSQL}`;
       //console.log(sql, args);
-      const doc:any = await this.store.database.getAsync(sql, args);
+      const doc:any = await db.getAsync(sql, args);
       return doc['COUNT(*)'];
 
     } else {
-      const doc:any = await this.store.database.getAsync(`SELECT COUNT(*) from ${this.name}`);
+      const doc:any = await db.getAsync(`SELECT COUNT(*) from ${this.name}`);
       return doc['COUNT(*)'];
     }
   }
 
-  async parseUpdateComponent(update: any, db: Database): Promise<[string, any[]]> {
-
-    let updateSQL = 'document'
-    let values: any[] = [];
-    if (update['$inc']) {
-      Object.keys(update['$inc']).forEach(k => {
-        updateSQL = `json_set(document, '$.${k}', json_extract(${updateSQL}, '$.${k}') + ?)`;
-        const val = update['$inc'][k];
-        if (typeof val == 'string' || typeof val == 'number'){ 
-          values.push(val);
-        } else {
-          values.push(JSON.stringify(val));
-        }
-      });
-    }
-    if (update['$set']) {
-      Object.keys(update['$set']).forEach(k => {
-        updateSQL = `json_set(${updateSQL}, '$.${k}', ?)`;
-        const val = update['$set'][k];
-        if (typeof val == 'string' || typeof val == 'number'){ 
-          values.push(val);
-        } else {
-          values.push(JSON.stringify(val));
-        }
-      });
-    }
-    if (update['$push']) {
-//INSERT INTO people SELECT "FOO", json_object('foo', json_group_array(DISTINCT value)) as myJson from (SELECT DISTINCT jsonToday.value FROM people, json_each(document, '$.foo') as jsonToday UNION SELECT 7 as jsonToday)
-//json_set(document, '$.foo', json_group_array(DISTINCT value)) from (SELECT jsonToday.value FROM people, json_each(document, '$.foo') as jsonToday UNION SELECT 23 as jsonToday UNION SELECT 24 as jsonToday));
-
-      Object.keys(update['$push']).forEach(k => {
-        updateSQL = `(SELECT json_set(${updateSQL}, '$.${k}', json_group_array(value)) from (SELECT value FROM ${this.name}, json_each(${updateSQL}, '$.${k}'))`;
-        //ugh, we just forked the updateSQL string:
-        values = values.concat(values);
-
-        const val = update['$push'][k];
-        if (typeof val == 'string' || typeof val == 'number'){ 
-          updateSQL = updateSQL + ` UNION SELECT ? `;
-          values.push(val);
-        } else if (Array.isArray(val)){ 
-          for (let v of val) {
-            updateSQL = updateSQL + ` UNION SELECT ? `;
-            values.push(v);
-          }
-        } else {
-          updateSQL = updateSQL + ` UNION SELECT ? `;
-          values.push(JSON.stringify(val));
-        }
-        updateSQL = updateSQL + ")";
-      });
-    }
-
-    if (update['$addToSet']) {
-      throw new Error('$addToSet unimplemented yet');
-    }
-
-    if (values.length == 0 && update['$set'] == undefined && update['$inc'] == undefined) {
-      Object.keys(update).forEach(k => {
-        updateSQL = `json_set(${updateSQL}, '$.${k}', ?)`;
-        const val = update[k];
-        if (typeof val == 'string' || typeof val == 'number'){ 
-          values.push(val);
-        } else {
-          values.push(JSON.stringify(val));
-        }
-      });
-    }
-    return [updateSQL, values];
-  }
-
-  async update(q: any, update: any) {
+  async update(q: any, update: any, outerTransaction?: Transaction) {
 
     const query = new Query(this.parseComponent(q));
-    const db = await this.beginTransaction();
+    const t = await this.beginTransaction(outerTransaction);
 
     if (query.join().length > 0) {
       throw new Error("Complex queries not yet implemented for updates");
@@ -399,7 +372,7 @@ export class Collection {
           }
           args.unshift(val);
           //console.log(updateSQL, args);
-          await db.runAsync(updateSQL, args);
+          await t.handle.runAsync(updateSQL, args);
           keys.add(k);
         }
       }
@@ -419,7 +392,7 @@ export class Collection {
 
           args.unshift(val);
           //console.log(updateSQL, args);
-          await db.runAsync(updateSQL, args);
+          await t.handle.runAsync(updateSQL, args);
           keys.add(k);
         }
       }
@@ -444,19 +417,19 @@ export class Collection {
           }
 
           //console.log(updateSQL, args);
-          await db.runAsync(updateSQL, args);
+          await t.handle.runAsync(updateSQL, args);
 
           keys.add(k);
         }
       }
  
     } catch (error) {
-      await this.rollback(db);
+      await this.rollback(t);
       throw error;
     }
 
  //   const limit = (spec || {}).multi ? '' : 'LIMIT 1'
-    await this.commit(db);
+    await this.commit(t);
     return;
   }
 }

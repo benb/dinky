@@ -11,7 +11,7 @@ async function basicDatabase(logging = false) {
 
   await store.database.execAsync('DROP TABLE IF EXISTS people');
   const people = await store.getCollection('people');
-  people.insertMany([
+  await people.insertMany([
    {firstname: "Maggie", lastname: "Simpson", hobbies: ["dummies"]},
    {firstname: "Bart", lastname: "Simpson", hobbies: ["skateboarding", "boxcar racing", "annoying Homer"]},
    {firstname: "Marge", lastname: "Simpson"},
@@ -41,7 +41,7 @@ test("Indexing", async (t) => {
   const badPlan = await store.database.allAsync("EXPLAIN QUERY PLAN SELECT * from people ORDER BY json_extract(document, '$.firstname')");
   t.falsy((badPlan[0].detail as string).indexOf("USING INDEX") > -1, "Can't use index until created");
 
-  await people.createIndex({firstname: 1, lastname: 1});
+  await people.ensureIndex({firstname: 1, lastname: 1});
 
   const plan = await store.database.allAsync("EXPLAIN QUERY PLAN SELECT * from people ORDER BY json_extract(document, '$.firstname')");
 
@@ -53,8 +53,8 @@ test("Indexing", async (t) => {
 test("Queries", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection('people');
-  await people.createIndex({firstname: 1});
-  await people.createIndex({lastname: 1});
+  await people.ensureIndex({firstname: 1});
+  await people.ensureIndex({lastname: 1});
 
   const barts = await people.find({firstname: "Bart"});
   t.is(barts.length, 1, "There's only one Bart");
@@ -78,8 +78,8 @@ test("Queries", async (t) => {
 test("Updates", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection('people');
-  await people.createIndex({firstname: 1});
-  await people.createIndex({lastname: 1});
+  await people.ensureIndex({firstname: 1});
+  await people.ensureIndex({lastname: 1});
 
   await people.update({firstname: "Lisa", lastname: "Simpson"}, {$set: {lastname: "Van Houten"} });
   await people.update({firstname: "Bart", lastname: "Simpson"}, {$set: {lastname: "Van Houten"} });
@@ -123,16 +123,16 @@ test("Arrays", async (t) => {
   await people.ensureArrayIndex('hobbies');
   t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
 
-  const homerAnnoyers = await people.find({hobbies: ["annoying Homer"]});
+  const homerAnnoyers = await people.find({hobbies: {'$in': ["annoying Homer"]}});
   t.is(homerAnnoyers.length, 2, "Correct result count");
   t.deepEqual(homerAnnoyers.map(x => x.firstname).sort(), ["Bart", "Lisa"], "Correct objects");
 
-  const racersAndAnnoyers = await people.find({hobbies: ["annoying Homer", "boxcar racing"]});
+  const racersAndAnnoyers = await people.find({hobbies: {'$in' : ["annoying Homer", "boxcar racing"]}});
   t.is(racersAndAnnoyers.length, 3, "Correct result count");
   t.deepEqual(racersAndAnnoyers.map(x => x.firstname).sort(), ["Bart", "Homer", "Lisa"], "Correct objects");
 });
 
-test.only("Array Push", async (t) => {
+test("Array Push", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection('people');
 
