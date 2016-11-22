@@ -3,8 +3,27 @@ import * as uuid from 'uuid';
 
 export class Store { 
   database: Database;
+  path: string;
+  pool: Set<Database>;
   async open(path: string) {
+    this.path = path;
     this.database = await SQLite.open(path);
+    this.pool = new Set<Database>();
+  }
+
+  async getFromPool(): Promise<Database> {
+    if (this.pool.size > 0 ){
+      const db = this.pool.values().next().value;
+      this.pool.delete(db);
+      return db;
+    } else {
+      const db = await SQLite.open(this.path);
+      return db;
+    }
+  }
+
+  async returnToPool(db: Database) {
+    this.pool.add(db);
   }
 
   async getCollection(name: string) {
@@ -81,9 +100,8 @@ export class Collection {
   initializedStatus: "uninitialized" | "initializing" | "initialized";
   arrayIndexes: Map<string, string>;
 
-  private async getHandleFromPool() {
-    //todo REAL POOL
-    return this.store.database;
+  private async getHandleFromPool(): Promise<Database> {
+    return this.store.getFromPool();
   }
 
   private getMainHandle() {
@@ -91,7 +109,7 @@ export class Collection {
   }
 
   private returnHandleToPool(db: Database) {
-    return;
+    this.store.returnToPool(db);
   }
 
   private async beginTransaction(outerTransaction?: Transaction): Promise<Transaction> {

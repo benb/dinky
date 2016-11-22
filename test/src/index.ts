@@ -1,10 +1,18 @@
 import * as sqlite from 'sqlite3';
 import { Store } from '../../';
 import { test } from 'ava';
+import * as temp from 'temp';
+import * as uuid from 'uuid';
 
-async function basicDatabase(logging = false) {
+temp.track();
+
+async function tempDatabase() {
   const store = new Store();
-  await store.open(':memory:');
+  await store.open(temp.mkdirSync() + "/temp.db");
+  return store;
+}
+async function basicDatabase(logging = false) {
+  const store = await tempDatabase();
   if (logging) {
     store.database.on('trace', console.log);
   }
@@ -92,8 +100,7 @@ test("Updates", async (t) => {
 });
 
 test("Increment", async (t) => {
-  const store = new Store();
-  await store.open(':memory:');
+  const store = await tempDatabase();
   const people = await store.getCollection('people');
 
   await people.insert({firstname: "Lisa", lastname: "Simpson", age: 8});
