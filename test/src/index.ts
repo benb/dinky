@@ -6,16 +6,13 @@ import * as uuid from 'uuid';
 
 temp.track();
 
-async function tempDatabase() {
+async function tempDatabase(logging = false) {
   const store = new Store();
-  await store.open(temp.mkdirSync() + "/temp.db");
+  await store.open(temp.mkdirSync() + "/temp.db", logging);
   return store;
 }
 async function basicDatabase(logging = false) {
-  const store = await tempDatabase();
-  if (logging) {
-    store.database.on('trace', console.log);
-  }
+  const store = await tempDatabase(logging);
 
   await store.database.execAsync('DROP TABLE IF EXISTS people');
   const people = await store.getCollection('people');
@@ -139,12 +136,12 @@ test("Arrays", async (t) => {
   t.deepEqual(racersAndAnnoyers.map(x => x.firstname).sort(), ["Bart", "Homer", "Lisa"], "Correct objects");
 });
 
-test("Array Push", async (t) => {
+test("Array $push and $pop", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection('people');
 
-  await people.ensureArrayIndex('hobbies');
-  t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
+//  await people.ensureArrayIndex('hobbies');
+//  t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
 
   let homer: any;
   for (let x of ["TV", "Beer", "Go Crazy"]) {
@@ -157,4 +154,43 @@ test("Array Push", async (t) => {
 
   const tvWatcher = await people.findOne( {hobbies: {'$in' : ['TV'] } });
   t.is(tvWatcher.firstname, "Homer", "Can retrieve based on array query");
+
+  const hobbies = tvWatcher.hobbies;
+  await people.update({firstname: 'Homer'}, {'$pop': {'hobbies' : 1 } });
+  let dbHobbies = (await people.findOne({firstname: 'Homer'})).hobbies;
+  hobbies.pop();
+  t.deepEqual(hobbies, dbHobbies, "Standard $pop works");
+
+
+  await people.update({firstname: 'Homer'}, {'$pop': {'hobbies' : 1 } });
+  dbHobbies = (await people.findOne({firstname: 'Homer'})).hobbies;
+  hobbies.pop();
+  t.deepEqual(hobbies, dbHobbies, "Standard $pop works");
+
+  await people.update({firstname: 'Homer'}, {'$pop': {'hobbies' : -1 } });
+  dbHobbies = (await people.findOne({firstname: 'Homer'})).hobbies;
+  hobbies.shift();
+  t.deepEqual(hobbies, dbHobbies, "Standard $pop works");
+
+  await people.update({firstname: 'Homer'}, {'$pop': {'hobbies' : -1 } });
+  dbHobbies = (await people.findOne({firstname: 'Homer'})).hobbies;
+  hobbies.shift();
+  t.deepEqual(hobbies, dbHobbies, "Standard $pop works");
 });
+
+test("'complex' updates", async (t) => {
+  for (let index in [true, false]) {
+    const store = await basicDatabase();
+    const people = await store.getCollection('people');
+    if (index) {
+      await people.ensureArrayIndex('hobbies');
+    }
+    await people.update({hobbies : {'$in': ["boxcar racing"]}}, {'$push': {'hobbies' : 'TV'}});
+    const tvWatchers = await people.find({hobbies: {'$in': ['boxcar racing']} });
+    t.is(tvWatchers.length, 2, "Correct number of entries updated");
+    for (let person of tvWatchers) {
+      t.not(person.hobbies.indexOf('TV'), -1, "Contains pushed entry");
+    }
+  }
+});
+

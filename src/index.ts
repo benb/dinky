@@ -5,9 +5,15 @@ export class Store {
   database: Database;
   path: string;
   pool: Set<Database>;
-  async open(path: string) {
+  logging = false;
+
+  async open(path: string, logging = false) {
     this.path = path;
     this.database = await SQLite.open(path);
+    this.logging = logging;
+    if (this.logging) {
+      this.database.on('trace', console.log);
+    }
     this.pool = new Set<Database>();
   }
 
@@ -18,6 +24,9 @@ export class Store {
       return db;
     } else {
       const db = await SQLite.open(this.path);
+      if (this.logging) {
+        db.on('trace', console.log);
+      }
       return db;
     }
   }
@@ -112,7 +121,7 @@ export class Collection {
     this.store.returnToPool(db);
   }
 
-  private async beginTransaction(outerTransaction?: Transaction): Promise<Transaction> {
+  async beginTransaction(outerTransaction?: Transaction): Promise<Transaction> {
     if (outerTransaction) {
       const db = outerTransaction.handle;
       const transactionName = uuid.v4();
@@ -125,7 +134,7 @@ export class Collection {
     }
   }
 
-  private async commit(transaction: Transaction) {
+  async commit(transaction: Transaction) {
     if (transaction.name) {
       await transaction.handle.execAsync(`RELEASE '${transaction.name}'`);
     } else {
@@ -134,7 +143,7 @@ export class Collection {
     }
   }
   
-  private async rollback(transaction: Transaction) {
+  async rollback(transaction: Transaction) {
     if (transaction.name) {
       await transaction.handle.execAsync(`ROLLBACK TO '${transaction.name}'`);
     } else {
@@ -374,20 +383,26 @@ export class Collection {
     const query = new Query(this.parseComponent(q));
     const t = await this.beginTransaction(outerTransaction);
 
+    let whereSQL: string;
     if (query.join().length > 0) {
-      throw new Error("Complex queries not yet implemented for updates");
+      whereSQL = `WHERE _id IN (SELECT DISTINCT \`${this.name}\`.\`_id\` FROM ${this.name} ${query.join()} WHERE ${query.toString()})`
+    } else {
+      whereSQL = `WHERE ${query.toString()}`;
     }
 
     try {
       const keys = new Set<string>();
       if (update['$inc']) {
         for (let k of Object.keys(update['$inc'])) {
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', json_extract(document, '$.${k}') + ?) WHERE ${query.toString()}`;
+          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', json_extract(document, '$.${k}') + ?) ${whereSQL}`;
+
           const args = query.values();
           const val = update['$inc'][k];
+
           if (typeof val != 'number'){ 
             throw new Error("Can't increment by non-number type: " + k + " += " + val);
           }
+
           args.unshift(val);
           //console.log(updateSQL, args);
           await t.handle.runAsync(updateSQL, args);
@@ -400,7 +415,7 @@ export class Collection {
 
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', ?) WHERE ${query.toString()}`;
+          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', ?) ${whereSQL}`;
           const args = query.values();
           let val = update['$set'][k];
 
@@ -414,13 +429,14 @@ export class Collection {
           keys.add(k);
         }
       }
+
       if (update['$push']) {
         for (let k of Object.keys(update['$push'])) {
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
           // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
 
          //UPDATE people SET document = json_set(document, '$.hobbies[' || json_array_length(json_extract(document, '$.hobbies')) || ']', "Skateboarding")  WHERE json_extract(document, "$.firstname") = "Bart";
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?)  WHERE ${query.toString()}`;
+          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?)  ${whereSQL}`;
           const val = update['$push'][k];
           const args:any[] = query.values() 
 
@@ -434,13 +450,29 @@ export class Collection {
             args.unshift(JSON.stringify(val));
           }
 
-          //console.log(updateSQL, args);
           await t.handle.runAsync(updateSQL, args);
 
           keys.add(k);
         }
       }
- 
+
+      if (update['$pop']) {
+        for (let k of Object.keys(update['$pop'])) {
+          if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
+          const val = update['$pop'][k];
+          let updateSQL: string;
+          if (val === 1) {
+            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') ${whereSQL}`;
+          } else if (val === -1) {
+            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[0]') ${whereSQL}`;
+          } else {
+            throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
+          }
+          const args:any[] = query.values();
+          await t.handle.runAsync(updateSQL, args);
+          keys.add(k);
+        }
+      }
     } catch (error) {
       await this.rollback(t);
       throw error;
