@@ -55,17 +55,97 @@ export interface UpdateSpec {
   multi?: boolean;
 }
 
-
+type KeyValuePair = [string, any];
+type SubQueryContainer = {subQueries: (Query | KeyValuePair)[]};
+type QueryObjectContainer = {queryObject: any};
 
 class Query {
-  subQueries: (Query | [string, any])[];
-  operator: "AND" | "OR"
-  otherTable?: string
+  subQueries: (Query | KeyValuePair)[];
+  operator: "AND" | "OR";
+  otherTable?: string;
+  arrayIndexes: Map<string, string>;
+  name: string;
 
-  constructor(subQueries: (Query | [string, any])[], operator?: "AND" | "OR") {
-    this.subQueries = subQueries;
-    this.operator = operator || "AND";
+
+  constructor(q:SubQueryContainer | QueryObjectContainer, tableName: string, arrayIndexes: Map<string, string>, operator?: "AND" | "OR") {
+    this.arrayIndexes = arrayIndexes;
+    this.name = tableName;
+    if ((<SubQueryContainer>q).subQueries) {
+      this.subQueries = (<SubQueryContainer>q).subQueries;
+      this.operator = operator || "AND";
+    } else {
+      this.subQueries = this.parseComponent((<QueryObjectContainer>q).queryObject);
+      this.operator = operator || "AND";
+    }
   }
+
+  parseKeyValue(key: string, value: any) : ([string, any] | Query) {
+    if (key.startsWith('$')) {
+      if (key.toLowerCase() == '$and') {
+        return new Query({queryObject: value}, this.name, this.arrayIndexes,  "AND");
+      } else if (key.toLowerCase() == '$or') {
+        return new Query({queryObject: value}, this.name, this.arrayIndexes, "OR");
+      } else if (key.toLowerCase() == '$not') {
+        return new Query({queryObject: value}, this.name, this.arrayIndexes);
+      } else {
+        throw new Error("Unsupported query term " + key);
+      }
+    } else {
+      if (typeof value == 'string' || typeof value == 'number') {
+        return [`json_extract(document, '$.${key}') IS ?`, value];
+      } else if (Array.isArray(value['$in'])) {
+        //console.log(this.arrayIndexes, key);
+        if (this.arrayIndexes.has(key)) { //indexed
+
+          const table = this.arrayIndexes.get(key);
+          const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
+          const q = new Query({subQueries: [[`${table}.value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
+          q.otherTable = `INNER JOIN ${table} ON ${table}._id = ${this.name}._id`;
+          //console.log(q);
+          return q;
+
+        } else { //unindexed
+
+          const identifier = 'foo'; //TODO 
+          const tableFunc = `json_each(document, '$.${key}') AS ${identifier}`;
+
+          const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
+          const q = new Query({subQueries: [[`${identifier}.value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
+          q.otherTable = ", " + tableFunc;
+          //console.log(q);
+          return q;
+
+        }
+      } else if (value['$not'] || value['$NOT']) {
+        const finalVal = value['$not'] || value['$NOT'];
+        if (typeof finalVal == 'string' || typeof finalVal== 'number') {
+          return [`json_extract(document, '$.${key}') IS NOT ?`, finalVal];
+        } else {
+          throw new Error("Unsupported query " + value);
+        }
+      } else {
+        throw new Error("Unsupported query " + value);
+      }
+    }
+  }
+
+  parseComponent(component: any) : ([string, any] | Query)[] {
+    if (Array.isArray(component)) {
+      return component.map(x => new Query({queryObject: x}, this.name, this.arrayIndexes));
+    }
+
+    const queries = Object
+      .keys(component)
+      .filter(x => x != '_id')
+      .map( (key) => {
+        return this.parseKeyValue(key, component[key]);
+      });
+    if (component['_id']) {
+      queries.push([`_id IS ?`, component['_id']]);
+    }
+    return queries;
+  }
+
 
   toString(): string {
     return this.subQueries.map( q => {
@@ -119,6 +199,10 @@ export class Collection {
 
   private returnHandleToPool(db: Database) {
     this.store.returnToPool(db);
+  }
+
+  private queryFor(q: any, operator?: "AND" | "OR") {
+    return new Query({queryObject: q}, this.name, this.arrayIndexes, operator);
   }
 
   async beginTransaction(outerTransaction?: Transaction): Promise<Transaction> {
@@ -238,80 +322,14 @@ export class Collection {
     }
   }
 
-  private parseComponent(component: any) : ([string, any] | Query)[] {
-
-    if (Array.isArray(component)) {
-      return component.map(x => new Query(this.parseComponent(x)));
-    }
-
-    const queries = Object
-      .keys(component)
-      .filter(x => x != '_id')
-      .map( (key) => {
-        return this.parseKeyValue(key, component[key]);
-      });
-    if (component['_id']) {
-      queries.push([`_id IS ?`, component['_id']]);
-    }
-    return queries;
-  }
-
-  private parseKeyValue(key: string, value: any) : ([string, any] | Query) {
-    if (key.startsWith('$')) {
-      if (key.toLowerCase() == '$and') {
-        return new Query(this.parseComponent(value), "AND");
-      } else if (key.toLowerCase() == '$or') {
-        return new Query(this.parseComponent(value), "OR");
-      } else if (key.toLowerCase() == '$not') {
-        return new Query(this.parseComponent(value));
-      } else {
-        throw new Error("Unsupported query term " + key);
-      }
-    } else {
-      if (typeof value == 'string' || typeof value == 'number') {
-        return [`json_extract(document, '$.${key}') IS ?`, value];
-      } else if (Array.isArray(value['$in'])) {
-        //console.log(this.arrayIndexes, key);
-        if (this.arrayIndexes.has(key)) { //indexed
-
-          const table = this.arrayIndexes.get(key);
-          const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query([[`${table}.value IN (${qMarks})`, value['$in']]]);
-          q.otherTable = `INNER JOIN ${table} ON ${table}._id = ${this.name}._id`;
-          //console.log(q);
-          return q;
-
-        } else { //unindexed
-
-          const identifier = 'foo'; //TODO 
-          const tableFunc = `json_each(document, '$.${key}') AS ${identifier}`;
-
-          const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query([[`${identifier}.value IN (${qMarks})`, value['$in']]]);
-          q.otherTable = ", " + tableFunc;
-          //console.log(q);
-          return q;
-
-        }
-      } else if (value['$not'] || value['$NOT']) {
-        const finalVal = value['$not'] || value['$NOT'];
-        if (typeof finalVal == 'string' || typeof finalVal== 'number') {
-          return [`json_extract(document, '$.${key}') IS NOT ?`, finalVal];
-        } else {
-          throw new Error("Unsupported query " + value);
-        }
-      } else {
-        throw new Error("Unsupported query " + value);
-      }
-    }
-  }
+  
 
   async find(q?: any, limit?: number, transaction?: Transaction): Promise<any[]> {
     let docs:any[];
     const handle = transaction ? transaction.handle : this.getMainHandle();
 
     if (q && Object.keys(q).length > 0) {
-      const query = new Query(this.parseComponent(q));
+      const query = this.queryFor(q);
       const whereSQL = query.toString();
       const args = query.values();
       let joins = query.join().join(" ");
@@ -360,7 +378,7 @@ export class Collection {
   async count(q: any, transaction?: Transaction): Promise<number> {
     const db = transaction ? transaction.handle : this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
-      const query = new Query(this.parseComponent(q));
+      const query = this.queryFor(q);
       const whereSQL = query.toString();
       const args = query.values();
       let joins = query.join().join(" ");
@@ -380,7 +398,7 @@ export class Collection {
 
   async update(q: any, update: any, outerTransaction?: Transaction) {
 
-    const query = new Query(this.parseComponent(q));
+    const query = this.queryFor(q);
     const t = await this.beginTransaction(outerTransaction);
 
     let whereSQL: string;
