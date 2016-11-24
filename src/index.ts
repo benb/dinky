@@ -186,6 +186,8 @@ export class Collection {
   name: string;
   initializedStatus: "uninitialized" | "initializing" | "initialized";
   arrayIndexes: Map<string, string>;
+  idField = "_id";
+  private dbIdField = "_id";
 
   private async getHandleFromPool(): Promise<Database> {
     return this.store.getFromPool();
@@ -205,6 +207,10 @@ export class Collection {
   }
 
   private queryFor(q: any, operator?: "AND" | "OR") {
+    if (this.idField != this.dbIdField) {
+      q[this.dbIdField] = q[this.idField];
+      delete q[this.idField];
+    }
     return new Query({queryObject: q}, this.name, this.arrayIndexes, operator);
   }
 
@@ -348,7 +354,7 @@ export class Collection {
 
     return docs.map(doc => {
       const parsed = JSON.parse(doc.document);
-      parsed._id = doc._id;
+      parsed[this.idField] = doc[this.dbIdField];
       return parsed;
     });
   }
@@ -361,16 +367,14 @@ export class Collection {
       return null;
     }
   }
-
+  
   async insert(doc: any, transaction?: Transaction) {
     const db = transaction ? transaction.handle : this.getMainHandle();
+    const id = doc[this.idField] || uuid.v4();
+    doc[this.idField] = id;
 
-    if (!doc._id) {
-      doc._id = uuid.v4();
-    }
-
-    await db.runAsync(`INSERT INTO ${this.name} VALUES (?, ?);`, doc._id, JSON.stringify(doc, (key, value) => {
-      if (key === '_id') {
+    await db.runAsync(`INSERT INTO ${this.name} VALUES (?, ?);`, id, JSON.stringify(doc, (key, value) => {
+      if (key === this.idField) {
         return undefined;
       } else {
         return value;
@@ -428,10 +432,10 @@ export class Collection {
     if (options && options.upsert) {
       const matchingID = await t.handle.getAsync(`SELECT _id FROM ${this.name} WHERE ${whereSQL} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
       if (!matchingID) {
-        const id = update._id || q._id;
+        const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
-          if (!update._id && q._id) {
-            update._id = q._id;
+          if (!update[this.idField] && q[this.idField]) {
+            update[this.idField] = q[this.idField];
           }
           await this.insert(update, t);
           await this.commit(t);

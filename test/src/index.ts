@@ -11,6 +11,7 @@ async function tempDatabase(logging = false) {
   await store.open(temp.mkdirSync() + "/temp.db", logging);
   return store;
 }
+
 async function basicDatabase(logging = false) {
   const store = await tempDatabase(logging);
 
@@ -212,3 +213,14 @@ test("upsert", async (t) => {
   }
 });
 
+test("id field", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection('people');
+  const person = await people.findOne();
+  const id = person._id;
+  people.idField = "uuid";
+  const samePerson = await people.findOne({uuid: id});
+  t.is(samePerson.uuid, id, "Correct identifier");
+  t.is(samePerson.firstname, person.firstname, "Correct fields");
+  t.is(samePerson.lastname, person.lastname, "Correct fields");
+});
