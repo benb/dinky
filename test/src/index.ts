@@ -34,7 +34,6 @@ test("Basic insertion and retrieval", async (t) => {
   const allPeople:any[] = await people.find({});
 
   t.is(allPeople.length, 6, "Six results");
-  t.is(allPeople[0].firstname, "Maggie", "Correct firstname");
 
   await store.close();
 });
@@ -191,6 +190,25 @@ test("'complex' updates", async (t) => {
     for (let person of tvWatchers) {
       t.not(person.hobbies.indexOf('TV'), -1, "Contains pushed entry");
     }
+  }
+});
+
+test("upsert", async (t) => {
+  for (let index in [true, false]) {
+    const store = await basicDatabase();
+    const people = await store.getCollection('people');
+    if (index) {
+      await people.ensureArrayIndex('hobbies');
+    }
+    await people.update({firstname: 'Ned', lastname: 'Flanders'}, {'$push': {'hobbies' : 'church'}}, {upsert: true});
+    let ned = await people.findOne({hobbies : {'$in': ['church']}});
+    t.truthy(ned, "Upsert created an object");
+    t.is(ned.firstname, 'Ned', 'Upsert creates fields');
+
+    await people.update({firstname: 'Ned', lastname: 'Flanders'}, {'$push': {'hobbies' : 'gardening'}}, {upsert: true});
+    ned = await people.findOne({hobbies : {'$in': ['gardening']}});
+    t.is(await people.count({firstname: 'Ned'}), 1, 'upsert doesn\'t insert unless necessary');
+    t.is(ned.firstname, 'Ned', 'upsert does standard update to correct document');
   }
 });
 

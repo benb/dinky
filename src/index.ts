@@ -1,4 +1,5 @@
 import { SQLite, Database, Statement } from 'squeamish';
+import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 
 export class Store { 
@@ -47,9 +48,6 @@ export class Store {
 
 }
 
-// Not supported yet
-// upsert is hard
-// multi requires SQLITE_ENABLE_UPDATE_DELETE_LIMIT and my SQLite3 doesn't seem to have it.
 export interface UpdateSpec {
   upsert?: boolean;
   multi?: boolean;
@@ -378,6 +376,8 @@ export class Collection {
         return value;
       }
     }));
+
+    return doc;
   }
 
   async count(q: any, transaction?: Transaction): Promise<number> {
@@ -426,7 +426,7 @@ export class Collection {
     //emulate mongo behaviour
     //https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
     if (options && options.upsert) {
-      const matchingID = await t.handle.execAsync(`SELECT ${whereSQL} LIMIT 1`);
+      const matchingID = await t.handle.getAsync(`SELECT _id FROM ${this.name} WHERE ${whereSQL} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
       if (!matchingID) {
         const id = update._id || q._id;
         if (!containsClauses(update)) {
@@ -434,17 +434,20 @@ export class Collection {
             update._id = q._id;
           }
           await this.insert(update, t);
-          return this.commit(t);
+          await this.commit(t);
+          return;
         } else {
           //From mongo docs:
           // Comparison operations from the <query> will not be included in the new document.
-          const newDoc = filterClauses(q);
-          this.insert(newDoc, t);
-          await this.update(newDoc, update, undefined, t);
-          return this.commit(t);
+          let newDoc = filterClauses(q);
+          newDoc = await this.insert(newDoc, t);
+          await this.update(newDoc, update, {multi: false, upsert: false}, t);
+          await this.commit(t);
+          return;
         }
       }
     }
+
 
     try {
       const keys = new Set<string>();
@@ -489,12 +492,16 @@ export class Collection {
       if (update['$push']) {
         for (let k of Object.keys(update['$push'])) {
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
-          // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
 
-         //UPDATE people SET document = json_set(document, '$.hobbies[' || json_array_length(json_extract(document, '$.hobbies')) || ']', "Skateboarding")  WHERE json_extract(document, "$.firstname") = "Bart";
+          // If nothing exists at that location, create an empty array
+          const prepareSQL= `UPDATE ${this.name} SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL AND ${whereSQL}`;
+          const args:any[] = query.values() 
+          await t.handle.runAsync(prepareSQL, args);
+
+
+          // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
           const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) WHERE ${whereSQL}`;
           const val = update['$push'][k];
-          const args:any[] = query.values() 
 
           if (typeof val == 'string' || typeof val == 'number'){ 
             args.unshift(val);
@@ -540,41 +547,3 @@ export class Collection {
   }
 }
 
-
-
-function containsClauses(obj: any): boolean {
-  if (obj === null || typeof obj !== "object") {
-    return false;
-  }
-
-  if (Array.isArray(obj)) { 
-    return obj.map(filterClauses).indexOf(true) != -1;
-  }
-
-  for (let key in Object.keys(obj)) {
-    if (key.startsWith('$')) {
-      return true;
-    }
-  }
-  return false;
-}
-/**
- Remove $push, $pop, $in etc.
- */
-function filterClauses(obj: any): any {
-  const copy:any = {};
-
-  if (obj === null || typeof obj !== "object") {
-    return obj;
-  }
-
-  if (Array.isArray(obj)){ 
-    return obj.map(filterClauses);
-  }
-
-  for (let key in Object.keys(obj)) {
-    if (!key.startsWith('$')) {
-      copy[key] = filterClauses(obj[key]);
-    }
-  }
-}
