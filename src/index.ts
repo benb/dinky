@@ -193,6 +193,11 @@ export class Collection {
     return this.store.getFromPool();
   }
 
+  /**
+    Please don't use this handle for anything requiring transactions.
+    Other things could run async and there's nothing to stop them running
+    random statements inside your transaction.
+    */
   private getMainHandle() {
     return this.store.database;
   }
@@ -395,24 +400,57 @@ export class Collection {
       return doc['COUNT(*)'];
     }
   }
-
-  async update(q: any, update: any, outerTransaction?: Transaction) {
+  
+  async update(q: any, update: any, options?: UpdateSpec, outerTransaction?: Transaction) {
 
     const query = this.queryFor(q);
     const t = await this.beginTransaction(outerTransaction);
 
     let whereSQL: string;
-    if (query.join().length > 0) {
-      whereSQL = `WHERE _id IN (SELECT DISTINCT \`${this.name}\`.\`_id\` FROM ${this.name} ${query.join()} WHERE ${query.toString()})`
+
+    let limit = ""
+    if (!options || !options.multi)  {
+      limit = "LIMIT 1";
+    }
+
+    // Unless the sqlite database is compiled with SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+    // we can't set a LIMIT at the end of a statement without making the query more
+    // complicated
+
+    if (query.join().length > 0 || limit != "") {
+      whereSQL = `_id IN (SELECT DISTINCT \`${this.name}\`.\`_id\` FROM ${this.name} ${query.join()} WHERE ${query.toString()} ${limit} )`
     } else {
-      whereSQL = `WHERE ${query.toString()}`;
+      whereSQL = `${query.toString()}`;
+    }
+
+    //emulate mongo behaviour
+    //https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
+    if (options && options.upsert) {
+      const matchingID = await t.handle.execAsync(`SELECT ${whereSQL} LIMIT 1`);
+      if (!matchingID) {
+        const id = update._id || q._id;
+        if (!containsClauses(update)) {
+          if (!update._id && q._id) {
+            update._id = q._id;
+          }
+          await this.insert(update, t);
+          return this.commit(t);
+        } else {
+          //From mongo docs:
+          // Comparison operations from the <query> will not be included in the new document.
+          const newDoc = filterClauses(q);
+          this.insert(newDoc, t);
+          await this.update(newDoc, update, undefined, t);
+          return this.commit(t);
+        }
+      }
     }
 
     try {
       const keys = new Set<string>();
       if (update['$inc']) {
         for (let k of Object.keys(update['$inc'])) {
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', json_extract(document, '$.${k}') + ?) ${whereSQL}`;
+          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) WHERE ${whereSQL}`;
 
           const args = query.values();
           const val = update['$inc'][k];
@@ -433,7 +471,7 @@ export class Collection {
 
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', ?) ${whereSQL}`;
+          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', ?) WHERE ${whereSQL}`;
           const args = query.values();
           let val = update['$set'][k];
 
@@ -454,7 +492,7 @@ export class Collection {
           // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
 
          //UPDATE people SET document = json_set(document, '$.hobbies[' || json_array_length(json_extract(document, '$.hobbies')) || ']', "Skateboarding")  WHERE json_extract(document, "$.firstname") = "Bart";
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?)  ${whereSQL}`;
+          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) WHERE ${whereSQL}`;
           const val = update['$push'][k];
           const args:any[] = query.values() 
 
@@ -480,9 +518,9 @@ export class Collection {
           const val = update['$pop'][k];
           let updateSQL: string;
           if (val === 1) {
-            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') ${whereSQL}`;
+            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') WHERE ${whereSQL}`;
           } else if (val === -1) {
-            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[0]') ${whereSQL}`;
+            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[0]') WHERE ${whereSQL}`;
           } else {
             throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
           }
@@ -503,3 +541,40 @@ export class Collection {
 }
 
 
+
+function containsClauses(obj: any): boolean {
+  if (obj === null || typeof obj !== "object") {
+    return false;
+  }
+
+  if (Array.isArray(obj)) { 
+    return obj.map(filterClauses).indexOf(true) != -1;
+  }
+
+  for (let key in Object.keys(obj)) {
+    if (key.startsWith('$')) {
+      return true;
+    }
+  }
+  return false;
+}
+/**
+ Remove $push, $pop, $in etc.
+ */
+function filterClauses(obj: any): any {
+  const copy:any = {};
+
+  if (obj === null || typeof obj !== "object") {
+    return obj;
+  }
+
+  if (Array.isArray(obj)){ 
+    return obj.map(filterClauses);
+  }
+
+  for (let key in Object.keys(obj)) {
+    if (!key.startsWith('$')) {
+      copy[key] = filterClauses(obj[key]);
+    }
+  }
+}

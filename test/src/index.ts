@@ -185,7 +185,7 @@ test("'complex' updates", async (t) => {
     if (index) {
       await people.ensureArrayIndex('hobbies');
     }
-    await people.update({hobbies : {'$in': ["boxcar racing"]}}, {'$push': {'hobbies' : 'TV'}});
+    await people.update({hobbies : {'$in': ["boxcar racing"]}}, {'$push': {'hobbies' : 'TV'}}, {multi: true});
     const tvWatchers = await people.find({hobbies: {'$in': ['boxcar racing']} });
     t.is(tvWatchers.length, 2, "Correct number of entries updated");
     for (let person of tvWatchers) {
