@@ -97,8 +97,8 @@ class Query {
 
           const table = this.arrayIndexes.get(key);
           const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query({subQueries: [[`${table}.value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
-          q.otherTable = `INNER JOIN ${table} ON ${table}._id = ${this.name}._id`;
+          const q = new Query({subQueries: [[`"${table}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
+          q.otherTable = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
           //console.log(q);
           return q;
 
@@ -108,7 +108,7 @@ class Query {
           const tableFunc = `json_each(document, '$.${key}') AS ${identifier}`;
 
           const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query({subQueries: [[`${identifier}.value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
+          const q = new Query({subQueries: [[`"${identifier}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
           q.otherTable = ", " + tableFunc;
           //console.log(q);
           return q;
@@ -269,7 +269,7 @@ export class Collection {
   async initialize() {
     if (this.initializedStatus == "uninitialized") {
       this.initializedStatus = "initializing";
-      await this.getMainHandle().runAsync(`CREATE TABLE IF NOT EXISTS ${this.name} (_id TEXT PRIMARY KEY, document JSON);`);
+      await this.getMainHandle().runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`);
       await this.refreshArrayIndexes();
       this.initializedStatus = "initialized";
     }
@@ -278,7 +278,7 @@ export class Collection {
   async ensureIndex(spec: {[key: string] : number}) {
     const name = this.name + "_" + Object.keys(spec).join("_");
 
-    let sql = `CREATE INDEX IF NOT EXISTS ${name} on ${this.name}(`;
+    let sql = `CREATE INDEX IF NOT EXISTS "${name}" on "${this.name}"(`;
 
     sql = sql + Object.keys(spec).map((key: string) => {
       const order:number = spec[key];
@@ -297,28 +297,31 @@ export class Collection {
 
     try {
      const tableName = `${this.name}_${key}`;
-      await t.handle.runAsync(`CREATE TABLE '${tableName}' AS SELECT _id, json_each.* from ${this.name}, json_each(document, '$.${key}')`);
+      await t.handle.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
 
-      await t.handle.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_insert_trigger`);
-      let sql = `CREATE TRIGGER '${tableName}_insert_trigger' AFTER INSERT ON ${this.name}
+      await t.handle.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
+      let sql = `CREATE TRIGGER "${tableName}_insert_trigger" AFTER INSERT ON "${this.name}"
       BEGIN
-      INSERT INTO ${tableName} SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}'), ${this.name};
+      INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
       END;`;
+      //console.log(sql);
       await t.handle.runAsync(sql);
 
-      await t.handle.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_update_trigger`);
-      sql = `CREATE TRIGGER '${tableName}_update_trigger' AFTER UPDATE ON ${this.name}
+      await t.handle.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_update_trigger"`);
+      sql = `CREATE TRIGGER "${tableName}_update_trigger" AFTER UPDATE ON "${this.name}"
       BEGIN
-      DELETE FROM ${tableName} WHERE _id = OLD._id;
-      INSERT INTO ${tableName} SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}'), ${this.name};
+      DELETE FROM "${tableName}" WHERE _id = OLD._id;
+      INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
       END;`;
+      //console.log(sql);
       await t.handle.runAsync(sql);
 
-      await t.handle.runAsync(`DROP TRIGGER IF EXISTS ${tableName}_delete`);
-      sql = `CREATE TRIGGER '${tableName}_delete' AFTER UPDATE ON ${this.name}
+      await t.handle.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_delete"`);
+      sql = `CREATE TRIGGER "${tableName}_delete" AFTER UPDATE ON "${this.name}"
       BEGIN
-      DELETE FROM ${tableName} WHERE _id = OLD._id;
+      DELETE FROM "${tableName}" WHERE _id = OLD._id;
       END;`;
+      //console.log(sql);
       await t.handle.runAsync(sql);
 
       //TODO update delete
@@ -345,11 +348,11 @@ export class Collection {
       if (joins) {
         joins = joins;
       }
-      const sql = `SELECT DISTINCT ${this.name}._id, ${this.name}.document from ${this.name} ${joins} WHERE ${whereSQL} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
+      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} WHERE ${whereSQL} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
       //console.log(sql, args);
       docs = await handle.allAsync(sql, args);
     } else {
-      docs = await handle.allAsync(`SELECT * from ${this.name}`);
+      docs = await handle.allAsync(`SELECT * from "${this.name}"`);
     }
 
     return docs.map(doc => {
@@ -359,8 +362,8 @@ export class Collection {
     });
   }
 
-  async findOne(q?: any): Promise<any> {
-    const doc = await this.find(q, 1);
+  async findOne(q?: any, transaction?: Transaction): Promise<any> {
+    const doc = await this.find(q, 1, transaction);
     if (doc.length > 0) {
       return doc[0];
     } else {
@@ -373,7 +376,7 @@ export class Collection {
     const id = doc[this.idField] || uuid.v4();
     doc[this.idField] = id;
 
-    await db.runAsync(`INSERT INTO ${this.name} VALUES (?, ?);`, id, JSON.stringify(doc, (key, value) => {
+    await db.runAsync(`INSERT INTO "${this.name}" VALUES (?, ?);`, id, JSON.stringify(doc, (key, value) => {
       if (key === this.idField) {
         return undefined;
       } else {
@@ -394,13 +397,13 @@ export class Collection {
       if (joins) {
         joins = joins;
       }
-      const sql = `SELECT COUNT(*) from ${this.name} ${joins} WHERE ${whereSQL}`;
+      const sql = `SELECT COUNT(*) from "${this.name}" ${joins} WHERE ${whereSQL}`;
       //console.log(sql, args);
       const doc:any = await db.getAsync(sql, args);
       return doc['COUNT(*)'];
 
     } else {
-      const doc:any = await db.getAsync(`SELECT COUNT(*) from ${this.name}`);
+      const doc:any = await db.getAsync(`SELECT COUNT(*) from "${this.name}"`);
       return doc['COUNT(*)'];
     }
   }
@@ -422,7 +425,7 @@ export class Collection {
     // complicated
 
     if (query.join().length > 0 || limit != "") {
-      whereSQL = `_id IN (SELECT DISTINCT \`${this.name}\`.\`_id\` FROM ${this.name} ${query.join()} WHERE ${query.toString()} ${limit} )`
+      whereSQL = `_id IN (SELECT DISTINCT "${this.name}"._id FROM "${this.name}" ${query.join()} WHERE ${query.toString()} ${limit} )`
     } else {
       whereSQL = `${query.toString()}`;
     }
@@ -430,7 +433,7 @@ export class Collection {
     //emulate mongo behaviour
     //https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
     if (options && options.upsert) {
-      const matchingID = await t.handle.getAsync(`SELECT _id FROM ${this.name} WHERE ${whereSQL} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
+      const matchingID = await t.handle.getAsync(`SELECT _id FROM "${this.name}" WHERE ${whereSQL} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
@@ -457,7 +460,7 @@ export class Collection {
       const keys = new Set<string>();
       if (update['$inc']) {
         for (let k of Object.keys(update['$inc'])) {
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) WHERE ${whereSQL}`;
+          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) WHERE ${whereSQL}`;
 
           const args = query.values();
           const val = update['$inc'][k];
@@ -478,7 +481,7 @@ export class Collection {
 
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}', ?) WHERE ${whereSQL}`;
+          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', ?) WHERE ${whereSQL}`;
           const args = query.values();
           let val = update['$set'][k];
 
@@ -498,13 +501,13 @@ export class Collection {
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
           // If nothing exists at that location, create an empty array
-          const prepareSQL= `UPDATE ${this.name} SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL AND ${whereSQL}`;
+          const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL AND ${whereSQL}`;
           const args:any[] = query.values() 
           await t.handle.runAsync(prepareSQL, args);
 
 
           // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
-          const updateSQL = `UPDATE ${this.name} SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) WHERE ${whereSQL}`;
+          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) WHERE ${whereSQL}`;
           const val = update['$push'][k];
 
           if (typeof val == 'string' || typeof val == 'number'){ 
@@ -529,9 +532,9 @@ export class Collection {
           const val = update['$pop'][k];
           let updateSQL: string;
           if (val === 1) {
-            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') WHERE ${whereSQL}`;
+            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') WHERE ${whereSQL}`;
           } else if (val === -1) {
-            updateSQL = `UPDATE ${this.name} SET document = json_remove(document, '$.${k}[0]') WHERE ${whereSQL}`;
+            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[0]') WHERE ${whereSQL}`;
           } else {
             throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
           }

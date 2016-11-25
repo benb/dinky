@@ -6,6 +6,8 @@ import * as uuid from 'uuid';
 
 temp.track();
 
+const awkwardString = "people-%.4";
+
 async function tempDatabase(logging = false) {
   const store = new Store();
   await store.open(temp.mkdirSync() + "/temp.db", logging);
@@ -15,8 +17,8 @@ async function tempDatabase(logging = false) {
 async function basicDatabase(logging = false) {
   const store = await tempDatabase(logging);
 
-  await store.database.execAsync('DROP TABLE IF EXISTS people');
-  const people = await store.getCollection('people');
+  await store.database.execAsync(`DROP TABLE IF EXISTS "${awkwardString}"`);
+  const people = await store.getCollection(awkwardString);
   await people.insertMany([
    {firstname: "Maggie", lastname: "Simpson", hobbies: ["dummies"]},
    {firstname: "Bart", lastname: "Simpson", hobbies: ["skateboarding", "boxcar racing", "annoying Homer"]},
@@ -30,7 +32,7 @@ async function basicDatabase(logging = false) {
 
 test("Basic insertion and retrieval", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
 
   const allPeople:any[] = await people.find({});
 
@@ -41,14 +43,14 @@ test("Basic insertion and retrieval", async (t) => {
 
 test("Indexing", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
 
-  const badPlan = await store.database.allAsync("EXPLAIN QUERY PLAN SELECT * from people ORDER BY json_extract(document, '$.firstname')");
+  const badPlan = await store.database.allAsync(`EXPLAIN QUERY PLAN SELECT * from "${awkwardString}" ORDER BY json_extract(document, '$.firstname')`);
   t.falsy((badPlan[0].detail as string).indexOf("USING INDEX") > -1, "Can't use index until created");
 
   await people.ensureIndex({firstname: 1, lastname: 1});
 
-  const plan = await store.database.allAsync("EXPLAIN QUERY PLAN SELECT * from people ORDER BY json_extract(document, '$.firstname')");
+  const plan = await store.database.allAsync(`EXPLAIN QUERY PLAN SELECT * from "${awkwardString}" ORDER BY json_extract(document, '$.firstname')`);
 
   t.is(plan.length, 1, "One row to plan");
   t.truthy((plan[0].detail as string).indexOf("USING INDEX") > -1, "Should use index");
@@ -57,12 +59,12 @@ test("Indexing", async (t) => {
 
 test("Queries", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
   await people.ensureIndex({firstname: 1});
   await people.ensureIndex({lastname: 1});
 
   const barts = await people.find({firstname: "Bart"});
-  t.is(barts.length, 1, "There's only one Bart");
+  t.is(barts.length, 1, "Correct object count");
 
   const simpsons = await people.find({lastname: "Simpson"});
   t.is(simpsons.length, 5, "There's five Simpsons");
@@ -82,7 +84,7 @@ test("Queries", async (t) => {
 
 test("Updates", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
   await people.ensureIndex({firstname: 1});
   await people.ensureIndex({lastname: 1});
 
@@ -98,7 +100,7 @@ test("Updates", async (t) => {
 
 test("Increment", async (t) => {
   const store = await tempDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
 
   await people.insert({firstname: "Lisa", lastname: "Simpson", age: 8});
   await people.insert({firstname: "Bart", lastname: "Simpson", age: 10});
@@ -122,7 +124,7 @@ test("Increment", async (t) => {
 
 test("Arrays", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
 
   await people.ensureArrayIndex('hobbies');
   t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
@@ -138,7 +140,7 @@ test("Arrays", async (t) => {
 
 test("Array $push and $pop", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
 
 //  await people.ensureArrayIndex('hobbies');
 //  t.truthy(people.arrayIndexes.has('hobbies'), 'indexed on hobbies');
@@ -181,7 +183,7 @@ test("Array $push and $pop", async (t) => {
 test("'complex' updates", async (t) => {
   for (let index in [true, false]) {
     const store = await basicDatabase();
-    const people = await store.getCollection('people');
+    const people = await store.getCollection(awkwardString);
     if (index) {
       await people.ensureArrayIndex('hobbies');
     }
@@ -197,7 +199,7 @@ test("'complex' updates", async (t) => {
 test("upsert", async (t) => {
   for (let index in [true, false]) {
     const store = await basicDatabase();
-    const people = await store.getCollection('people');
+    const people = await store.getCollection(awkwardString);
     if (index) {
       await people.ensureArrayIndex('hobbies');
     }
@@ -215,7 +217,7 @@ test("upsert", async (t) => {
 
 test("id field", async (t) => {
   const store = await basicDatabase();
-  const people = await store.getCollection('people');
+  const people = await store.getCollection(awkwardString);
   const person = await people.findOne();
   const id = person._id;
   people.idField = "uuid";
