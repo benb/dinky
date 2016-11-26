@@ -2,6 +2,27 @@ import { SQLite, Database, Statement } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 
+function optOp(operator: string, value: string) {
+  if (value && value.trim().length > 0) {
+    return `${operator} ${value}`;
+  } else {
+    return value;
+  }
+}
+
+function logDatabase(db: Database) {
+  for (let func of ['runAsync', 'execAsync', 'eachAsync', 'allAsync', 'getAsync']) {
+    const oldF = (db as any)[func].bind(db);
+    (db as any)[func] = function() {return oldF(...arguments).catch((err: any) => {
+      if (err.cause) {
+        err.cause.func = func;
+        err.cause.args = arguments;
+      }
+      throw err;
+    })};
+  }
+}
+
 export class Store { 
   database: Database;
   path: string;
@@ -14,6 +35,7 @@ export class Store {
     this.logging = logging;
     if (this.logging) {
       this.database.on('trace', console.log);
+      logDatabase(this.database);
     }
     this.pool = new Set<Database>();
   }
@@ -27,6 +49,7 @@ export class Store {
       const db = await SQLite.open(this.path);
       if (this.logging) {
         db.on('trace', console.log);
+        logDatabase(db);
       }
       return db;
     }
@@ -348,7 +371,7 @@ export class Collection {
       if (joins) {
         joins = joins;
       }
-      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} WHERE ${whereSQL} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
+      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
       //console.log(sql, args);
       docs = await handle.allAsync(sql, args);
     } else {
@@ -397,7 +420,7 @@ export class Collection {
       if (joins) {
         joins = joins;
       }
-      const sql = `SELECT COUNT(*) from "${this.name}" ${joins} WHERE ${whereSQL}`;
+      const sql = `SELECT COUNT(*) from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)}`;
       //console.log(sql, args);
       const doc:any = await db.getAsync(sql, args);
       return doc['COUNT(*)'];
@@ -425,7 +448,7 @@ export class Collection {
     // complicated
 
     if (query.join().length > 0 || limit != "") {
-      whereSQL = `_id IN (SELECT DISTINCT "${this.name}"._id FROM "${this.name}" ${query.join()} WHERE ${query.toString()} ${limit} )`
+      whereSQL = `_id IN (SELECT DISTINCT "${this.name}"._id FROM "${this.name}" ${query.join()} ${optOp('WHERE', query.toString())} ${limit} )`
     } else {
       whereSQL = `${query.toString()}`;
     }
@@ -433,7 +456,7 @@ export class Collection {
     //emulate mongo behaviour
     //https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
     if (options && options.upsert) {
-      const matchingID = await t.handle.getAsync(`SELECT _id FROM "${this.name}" WHERE ${whereSQL} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
+      const matchingID = await t.handle.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
@@ -460,7 +483,7 @@ export class Collection {
       const keys = new Set<string>();
       if (update['$inc']) {
         for (let k of Object.keys(update['$inc'])) {
-          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) WHERE ${whereSQL}`;
+          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) ${optOp('WHERE', whereSQL)}`;
 
           const args = query.values();
           const val = update['$inc'][k];
@@ -481,7 +504,7 @@ export class Collection {
 
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
-          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', ?) WHERE ${whereSQL}`;
+          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', ?) ${optOp('WHERE', whereSQL)}`;
           const args = query.values();
           let val = update['$set'][k];
 
@@ -501,13 +524,13 @@ export class Collection {
           if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
           // If nothing exists at that location, create an empty array
-          const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL AND ${whereSQL}`;
+          const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL ${optOp('AND', whereSQL)}`;
           const args:any[] = query.values() 
           await t.handle.runAsync(prepareSQL, args);
 
 
           // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
-          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) WHERE ${whereSQL}`;
+          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) ${optOp('WHERE', whereSQL)}`;
           const val = update['$push'][k];
 
           if (typeof val == 'string' || typeof val == 'number'){ 
@@ -532,9 +555,9 @@ export class Collection {
           const val = update['$pop'][k];
           let updateSQL: string;
           if (val === 1) {
-            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') WHERE ${whereSQL}`;
+            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') ${optOp('WHERE', whereSQL)}`;
           } else if (val === -1) {
-            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[0]') WHERE ${whereSQL}`;
+            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[0]') ${optOp('WHERE', whereSQL)}`;
           } else {
             throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
           }
