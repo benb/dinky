@@ -1,4 +1,4 @@
-import { SQLite, Database, Statement } from 'squeamish';
+import { SQLite, Database, Statement, Transaction } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 
@@ -202,8 +202,6 @@ class Query {
   }
 }
 
-export type Transaction = {handle: Database, name?: string};
-
 export class Collection {
   store: Store;
   name: string;
@@ -214,6 +212,14 @@ export class Collection {
 
   private async getHandleFromPool(): Promise<Database> {
     return this.store.getFromPool();
+  }
+
+  private async beginTransaction(t?: Transaction): Promise<Transaction> {
+    if (t) {
+      return t.begin();
+    } else {
+      return this.getHandleFromPool().then(db => db.beginTransaction());
+    }
   }
 
   /**
@@ -237,41 +243,10 @@ export class Collection {
     return new Query({queryObject: q}, this.name, this.arrayIndexes, operator);
   }
 
-  async beginTransaction(outerTransaction?: Transaction): Promise<Transaction> {
-    if (outerTransaction) {
-      const db = outerTransaction.handle;
-      const transactionName = uuid.v4();
-      await db.execAsync(`SAVEPOINT '${transactionName}'`);
-      return {handle: db, name: transactionName};
-    } else {
-      const db = await this.getHandleFromPool();
-      await db.execAsync(`BEGIN TRANSACTION`);
-      return {handle: db};
-    }
-  }
-
-  async commit(transaction: Transaction) {
-    if (transaction.name) {
-      await transaction.handle.execAsync(`RELEASE '${transaction.name}'`);
-    } else {
-      await transaction.handle.execAsync(`COMMIT`);
-      this.returnHandleToPool(transaction.handle);
-    }
-  }
-  
-  async rollback(transaction: Transaction) {
-    if (transaction.name) {
-      await transaction.handle.execAsync(`ROLLBACK TO '${transaction.name}'`);
-    } else {
-      await transaction.handle.execAsync(`ROLLBACK`);
-      this.returnHandleToPool(transaction.handle);
-    }
-  }
-
   async insertMany(data: any[], outerTransaction?: Transaction) {
     const t = await this.beginTransaction(outerTransaction);
     await Promise.all(data.map(x => this.insert(x, t)));
-    await this.commit(t);
+    await t.commit();
   }
 
   constructor(store: Store, name: string) {
@@ -316,43 +291,44 @@ export class Collection {
     if (this.arrayIndexes.has(key)) {
       return;
     }
+
     const t = await this.beginTransaction(outerTransaction);
 
     try {
      const tableName = `${this.name}_${key}`;
-      await t.handle.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
+      await t.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
 
-      await t.handle.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
+      await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
       let sql = `CREATE TRIGGER "${tableName}_insert_trigger" AFTER INSERT ON "${this.name}"
       BEGIN
       INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
       END;`;
       //console.log(sql);
-      await t.handle.runAsync(sql);
+      await t.runAsync(sql);
 
-      await t.handle.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_update_trigger"`);
+      await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_update_trigger"`);
       sql = `CREATE TRIGGER "${tableName}_update_trigger" AFTER UPDATE ON "${this.name}"
       BEGIN
       DELETE FROM "${tableName}" WHERE _id = OLD._id;
       INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
       END;`;
       //console.log(sql);
-      await t.handle.runAsync(sql);
+      await t.runAsync(sql);
 
-      await t.handle.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_delete"`);
+      await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_delete"`);
       sql = `CREATE TRIGGER "${tableName}_delete" AFTER UPDATE ON "${this.name}"
       BEGIN
       DELETE FROM "${tableName}" WHERE _id = OLD._id;
       END;`;
       //console.log(sql);
-      await t.handle.runAsync(sql);
+      await t.runAsync(sql);
 
       //TODO update delete
-      await t.handle.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
-      await this.commit(t);
+      await t.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
       this.arrayIndexes.set(key, tableName);
+      await t.commit();
     } catch (error) {
-      this.rollback(t);
+      t.rollback();
       throw error;
     }
   }
@@ -361,7 +337,7 @@ export class Collection {
 
   async find(q?: any, limit?: number, transaction?: Transaction): Promise<any[]> {
     let docs:any[];
-    const handle = transaction ? transaction.handle : this.getMainHandle();
+    const handle = transaction || this.getMainHandle();
 
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
@@ -394,8 +370,8 @@ export class Collection {
     }
   }
   
-  async insert(doc: any, transaction?: Transaction) {
-    const db = transaction ? transaction.handle : this.getMainHandle();
+  async insert(doc: any, t?: Transaction) {
+    const db = t ? t : this.getMainHandle();
     const id = doc[this.idField] || uuid.v4();
     doc[this.idField] = id;
 
@@ -411,7 +387,7 @@ export class Collection {
   }
 
   async count(q: any, transaction?: Transaction): Promise<number> {
-    const db = transaction ? transaction.handle : this.getMainHandle();
+    const db = transaction ? transaction : this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
       const whereSQL = query.toString();
@@ -453,10 +429,10 @@ export class Collection {
       whereSQL = `${query.toString()}`;
     }
 
-    //emulate mongo behaviour
-    //https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
+    // emulate mongo behaviour
+    // https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
     if (options && options.upsert) {
-      const matchingID = await t.handle.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
+      const matchingID = await t.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
@@ -464,15 +440,15 @@ export class Collection {
             update[this.idField] = q[this.idField];
           }
           await this.insert(update, t);
-          await this.commit(t);
+          await t.commit();
           return;
         } else {
-          //From mongo docs:
+          // From mongo docs:
           // Comparison operations from the <query> will not be included in the new document.
           let newDoc = filterClauses(q);
           newDoc = await this.insert(newDoc, t);
           await this.update(newDoc, update, {multi: false, upsert: false}, t);
-          await this.commit(t);
+          await t.commit();
           return;
         }
       }
@@ -494,7 +470,7 @@ export class Collection {
 
           args.unshift(val);
           //console.log(updateSQL, args);
-          await t.handle.runAsync(updateSQL, args);
+          await t.runAsync(updateSQL, args);
           keys.add(k);
         }
       }
@@ -514,7 +490,7 @@ export class Collection {
 
           args.unshift(val);
           //console.log(updateSQL, args);
-          await t.handle.runAsync(updateSQL, args);
+          await t.runAsync(updateSQL, args);
           keys.add(k);
         }
       }
@@ -526,7 +502,7 @@ export class Collection {
           // If nothing exists at that location, create an empty array
           const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL ${optOp('AND', whereSQL)}`;
           const args:any[] = query.values() 
-          await t.handle.runAsync(prepareSQL, args);
+          await t.runAsync(prepareSQL, args);
 
 
           // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
@@ -543,7 +519,7 @@ export class Collection {
             args.unshift(JSON.stringify(val));
           }
 
-          await t.handle.runAsync(updateSQL, args);
+          await t.runAsync(updateSQL, args);
 
           keys.add(k);
         }
@@ -562,17 +538,17 @@ export class Collection {
             throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
           }
           const args:any[] = query.values();
-          await t.handle.runAsync(updateSQL, args);
+          await t.runAsync(updateSQL, args);
           keys.add(k);
         }
       }
     } catch (error) {
-      await this.rollback(t);
+      await t.rollback();
       throw error;
     }
 
  //   const limit = (spec || {}).multi ? '' : 'LIMIT 1'
-    await this.commit(t);
+    await t.commit();
     return;
   }
 }
