@@ -214,9 +214,9 @@ export class Collection {
     return this.store.getFromPool();
   }
 
-  private async beginTransaction(t?: Transaction): Promise<Transaction> {
+  async beginTransaction(t?: Transaction): Promise<Transaction> {
     if (t) {
-      return t.begin();
+      return t.beginNew();
     } else {
       return this.getHandleFromPool().then(db => db.beginTransaction());
     }
