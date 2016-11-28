@@ -227,6 +227,18 @@ test("id field", async (t) => {
   t.is(samePerson.lastname, person.lastname, "Correct fields");
 });
 
+test("update document", async(t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+  const person = await people.findOne();
+  person.firstname = "Fred";
+  person.lastname = "Flintstone";
+  await people.update({_id: person._id}, person);
+  const newMan = await people.findOne({_id: person._id});
+  t.is(newMan.firstname, person.firstname, "Update works");
+  t.is(newMan.lastname, person.lastname, "Update works");
+});
+
 test("Basic Rx", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection(awkwardString);

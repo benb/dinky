@@ -453,7 +453,7 @@ export class Collection {
     // emulate mongo behaviour
     // https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
     if (options && options.upsert) {
-      const matchingID = await t.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""} `, query.values());
+      const matchingID = await t.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""}`, query.values());
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
@@ -563,6 +563,20 @@ export class Collection {
           keys.add(k);
         }
       }
+
+      if (!containsClauses(update)) {
+        if (update[this.idField]) {
+          delete update[this.idField];
+        }
+        const updateSQL = `UPDATE "${this.name}" SET document = json(?) ${optOp('WHERE', whereSQL)}`;
+        const args = [JSON.stringify(update), ...query.values()];
+        await t.runAsync(updateSQL, args);
+      } else {
+        if (keys.size == 0) {
+          throw new Error("Couldn't create update for field: " + update);
+        }
+      }
+
     } catch (error) {
       await t.rollback();
       throw error;
