@@ -226,3 +226,17 @@ test("id field", async (t) => {
   t.is(samePerson.firstname, person.firstname, "Correct fields");
   t.is(samePerson.lastname, person.lastname, "Correct fields");
 });
+
+test("Basic Rx", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+
+  t.plan(6);
+  people.findRx().subscribe(item => {
+    t.truthy(item.firstname);
+  });
+
+  await store.close();
+});
+
+

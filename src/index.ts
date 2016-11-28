@@ -1,6 +1,7 @@
 import { SQLite, Database, Statement, Transaction } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
+import * as Rx from '@reactivex/rxjs'; 
 
 function optOp(operator: string, value: string) {
   if (value && value.trim().length > 0) {
@@ -335,9 +336,34 @@ export class Collection {
 
   
 
+  findRx(q?: any, limit?: number, transaction?: Transaction): Rx.Observable<any> {
+    let subject = new Rx.Subject();
+    const f = (err: Error, item: any) => { 
+      if (err) { subject.error(err) } 
+      else { subject.next(item) }
+    }
+    const p = this._find(q || {}, f, limit, transaction);
+    p.then(() => {subject.complete()});
+    return subject;
+  }
+
   async find(q?: any, limit?: number, transaction?: Transaction): Promise<any[]> {
-    let docs:any[];
+    return this.findRx(q || {}, limit, transaction).toArray().toPromise();
+  }
+
+  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, transaction?: Transaction): Promise<number> {
+    let docs:number;
     const handle = transaction || this.getMainHandle();
+
+    let wrappedEach = (err: Error, doc: any) => {
+      if (err) {
+        each(err, null);
+      } else {
+        const parsed = JSON.parse(doc.document);
+        parsed[this.idField] = doc[this.dbIdField];
+        each(err, parsed);
+      }
+    }
 
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
@@ -349,16 +375,11 @@ export class Collection {
       }
       const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
       //console.log(sql, args);
-      docs = await handle.allAsync(sql, args);
+      docs = await handle.eachAsync(sql, args, wrappedEach);
     } else {
-      docs = await handle.allAsync(`SELECT * from "${this.name}"`);
+      docs = await handle.eachAsync(`SELECT * from "${this.name}"`, wrappedEach);
     }
-
-    return docs.map(doc => {
-      const parsed = JSON.parse(doc.document);
-      parsed[this.idField] = doc[this.dbIdField];
-      return parsed;
-    });
+    return docs;
   }
 
   async findOne(q?: any, transaction?: Transaction): Promise<any> {
