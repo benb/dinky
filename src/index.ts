@@ -185,6 +185,7 @@ class Query {
     if (Array.isArray(component)) {
       return component.map(x => new Query({queryObject: x}, this.name, this.arrayIndexes));
     }
+    if (!component) {return []}
 
     const queries = Object
       .keys(component)
@@ -234,6 +235,7 @@ class Query {
 }
 
 export type CollectionInitializedStatus = "uninitialized" | "initializing" | "initialized";
+export type IndexOptions = { unique: boolean };
 
 export class Collection {
   store: Store;
@@ -279,6 +281,9 @@ export class Collection {
   async withinTransaction(fn:(c: Collection) => Promise<void>, to?: TransactionOptions) {
     return this.store.withinTransaction(async s => {
      const c = new Collection(s, this.name, this.initializedStatus)
+     //TODO this needs to be sourced from a metadata table;
+     c.idField = this.idField;
+     c.arrayIndexes = this.arrayIndexes;
      await fn(c);
     }, to);
   }
@@ -300,17 +305,20 @@ export class Collection {
     }
   }
 
-  async ensureIndex(spec: {[key: string] : number}) {
+  async ensureIndex(spec: {[key: string] : number}, options?: IndexOptions) {
     const name = this.name + "_" + Object.keys(spec).join("_");
-
-    let sql = `CREATE INDEX IF NOT EXISTS "${name}" on "${this.name}"(`;
+    let uniq = "";
+    if (options && options.unique) {
+      uniq = " UNIQUE";
+    }
+    let sql = `CREATE${uniq} INDEX IF NOT EXISTS "${name}" on "${this.name}"(`;
 
     sql = sql + Object.keys(spec).map((key: string) => {
       const order = spec[key];
       return "json_extract(document, '$." + key + "') " + (order < 0 ? "DESC" : "ASC");
     }).join(", ");
     
-    sql = sql + ");"
+    sql = sql + ")"
     await this.getMainHandle().runAsync(sql);
   }
 
@@ -446,19 +454,18 @@ export class Collection {
     }
   }
   
-  async insert(doc: any) {
+  async insert(doc: any): Promise<any> {
     const db = this.getMainHandle();
     const id = doc[this.idField] || uuid.v4();
     doc[this.idField] = id;
-
-    await db.runAsync(`INSERT INTO "${this.name}" VALUES (?, ?);`, id, JSON.stringify(doc, (key, value) => {
+    const json = JSON.stringify(doc, (key, value) => {
       if (key === this.idField) {
         return undefined;
       } else {
         return value;
       }
-    }));
-
+    });
+    await db.runAsync(`INSERT INTO "${this.name}" VALUES (?, json(?));`, id, json);
     return doc;
   }
 

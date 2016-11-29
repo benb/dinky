@@ -57,6 +57,23 @@ test("Indexing", async (t) => {
   await store.close();
 });
 
+test("Unique Index", async (t) => {
+  let store = await basicDatabase();
+  let people = await store.getCollection(awkwardString);
+
+  await people.ensureIndex({firstname: 1, lastname: 1}, {unique: true});
+  t.plan(2);
+
+  try {
+    await people.insert({firstname: "Homer", lastname: "Simpson"});
+  } catch(error) {
+    t.truthy(true);
+  }
+
+  t.throws(people.insert({firstname: "Homer", lastname: "Simpson"}));
+
+});
+
 test("Queries", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection(awkwardString);
