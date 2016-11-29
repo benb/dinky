@@ -181,7 +181,7 @@ test("Array $push and $pop", async (t) => {
 });
 
 test("'complex' updates", async (t) => {
-  for (let index in [true, false]) {
+  for (let index of [true, false]) {
     const store = await basicDatabase();
     const people = await store.getCollection(awkwardString);
     if (index) {
@@ -197,7 +197,7 @@ test("'complex' updates", async (t) => {
 });
 
 test("upsert", async (t) => {
-  for (let index in [true, false]) {
+  for (let index of [true, false]) {
     const store = await basicDatabase();
     const people = await store.getCollection(awkwardString);
     if (index) {
@@ -285,4 +285,16 @@ test("DBCursor", async (t) => {
   const people = await store.getCollection(awkwardString);
   const twoPeople = await people.findObservable().limit(2).toArray().toPromise();
   t.is(twoPeople.length, 2, "limit() works");
+});
+
+test("Transactions", async(t) => {
+  const store = await basicDatabase();
+  await store.withinTransaction( async store => {
+    const people = await store.getCollection(awkwardString);
+    await people.insert({firstname: "Fred", lastname: "Flintstone"});
+    return;
+  });
+  const people = await store.getCollection(awkwardString);
+  const person = await people.findOne({firstname: "Fred"});
+  t.is(person.lastname, "Flintstone", "Object created within transaction");
 });

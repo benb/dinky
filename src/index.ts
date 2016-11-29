@@ -73,7 +73,6 @@ export class Store {
   }
 
   async withinTransaction(fn:(s: Store) => Promise<void>, to?: TransactionOptions) {
-
     const s = new Store();
     s.path = this.path;
     s.database = this.database;
@@ -85,12 +84,11 @@ export class Store {
       s.transaction = await db.beginTransaction(to);
     }
 
-    Promise.resolve(s).then(fn).then(() => {
-      if (s.transaction) { s.transaction.commit(); }
-    }, () => {
-      if (s.transaction) { s.transaction.rollback(); }
+    await fn(s).then(() => {
+      if (s.transaction) { return s.transaction.commit(); }
+    }, (error) => {
+      if (s.transaction) { return s.transaction.rollback().then(() => { throw error; });}
     });
-
   }
 
   async returnToPool(db: Database) {
@@ -235,10 +233,12 @@ class Query {
   }
 }
 
+export type CollectionInitializedStatus = "uninitialized" | "initializing" | "initialized";
+
 export class Collection {
   store: Store;
   name: string;
-  initializedStatus: "uninitialized" | "initializing" | "initialized";
+  private initializedStatus: CollectionInitializedStatus;
   arrayIndexes: Map<string, string>;
   idField = "_id";
   private dbIdField = "_id";
@@ -247,26 +247,17 @@ export class Collection {
     return this.store.transaction;
   }
 
-  private async getHandleFromPool(): Promise<Database> {
-    return this.store.getFromPool();
-  }
-
-
   private async beginTransaction(t?: Transaction | TransactionOptions): Promise<Transaction> {
-    if (t && t instanceof Transaction) {
-        return t.beginNew();
+    const outerTransaction = (t && t instanceof Transaction) ? t : this.transaction;
+    if (outerTransaction) {
+      return outerTransaction.beginNew();
     } else {
-      return this.getHandleFromPool().then(db => db.beginTransaction(t));
+      return this.store.getFromPool().then(db => db.beginTransaction(t as (TransactionOptions | undefined)));
     }
   }
 
-  /**
-    Please don't use this handle for anything requiring transactions.
-    Other things could run async and there's nothing to stop them running
-    random statements inside your transaction.
-    */
   private getMainHandle() {
-    return this.store.database;
+    return this.transaction || this.store.database;
   }
 
   private returnHandleToPool(db: Database) {
@@ -281,17 +272,24 @@ export class Collection {
     return new Query({queryObject: q}, this.name, this.arrayIndexes, operator);
   }
 
-  async insertMany(data: any[], outerTransaction = this.transaction) {
-    const t = await this.beginTransaction(outerTransaction);
-    await Promise.all(data.map(x => this.insert(x, t)));
-    await t.commit();
+  insertMany(data: any[]): Promise<void> {
+    return this.withinTransaction(async c => {
+      await Promise.all(data.map(x => c.insert(x)));
+    });
   }
 
-  constructor(store: Store, name: string) {
+  constructor(store: Store, name: string, status: CollectionInitializedStatus = "uninitialized") {
     this.store = store;
     this.name = name;
     this.arrayIndexes = new Map<string, string>();
-    this.initializedStatus = "uninitialized";
+    this.initializedStatus = status;
+  }
+
+  async withinTransaction(fn:(c: Collection) => Promise<void>, to?: TransactionOptions) {
+    return this.store.withinTransaction(async s => {
+     const c = new Collection(s, this.name, this.initializedStatus)
+     await fn(c);
+    }, to);
   }
 
   async refreshArrayIndexes() {
@@ -325,12 +323,12 @@ export class Collection {
     await this.getMainHandle().runAsync(sql);
   }
 
-  async ensureArrayIndex(key: string, outerTransaction = this.transaction) {
+  async ensureArrayIndex(key: string) {
     if (this.arrayIndexes.has(key)) {
       return;
     }
 
-    const t = await this.beginTransaction(outerTransaction);
+    const t = await this.beginTransaction();
 
     try {
      const tableName = `${this.name}_${key}`;
@@ -354,7 +352,7 @@ export class Collection {
       await t.runAsync(sql);
 
       await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_delete"`);
-      sql = `CREATE TRIGGER "${tableName}_delete" AFTER UPDATE ON "${this.name}"
+      sql = `CREATE TRIGGER "${tableName}_delete" AFTER DELETE ON "${this.name}"
       BEGIN
       DELETE FROM "${tableName}" WHERE _id = OLD._id;
       END;`;
@@ -381,10 +379,10 @@ export class Collection {
     }).join(", ");
   }
 
-  findObservable(q?: any, limit?: number, order?: any, transaction = this.transaction): DBCursor {
+  findObservable(q?: any, limit?: number, order?: any): DBCursor {
 
     if (q && (q['$query'] || q['$order'])) {
-      return this.findObservable(q['$query'], limit, q['$order'], transaction);
+      return this.findObservable(q['$query'], limit, q['$order']);
     }
 
     let observable = Rx.Observable.create( (observer: Rx.Observer<any>) => {
@@ -392,33 +390,33 @@ export class Collection {
         if (err) { observer.error(err) } 
         else { observer.next(item) }
       }
-      const p = this._find(q || {}, f, limit, order, transaction);
+      const p = this._find(q || {}, f, limit, order);
       p.then(() => {observer.complete()});
     });
 
 
     observable.take = (count: number) => {
-      return this.findObservable(q, limit ? Math.min(count, limit) : count, order, transaction);
+      return this.findObservable(q, limit ? Math.min(count, limit) : count, order);
     }
 
     observable.limit = observable.take;
 
     observable.sort = (order: any) => {
-      return this.findObservable(q, limit, order, transaction);
+      return this.findObservable(q, limit, order);
     };
 
     return observable; 
   }
 
-  async find(q?: any, limit?: number, transaction = this.transaction): Promise<any[]> {
-    return this.findObservable(q || {}, limit, transaction).toArray().toPromise();
+  async find(q?: any, limit?: number): Promise<any[]> {
+    return this.findObservable(q || {}, limit).toArray().toPromise();
   }
 
-  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, order?: any, transaction?: Transaction): Promise<number> {
+  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, order?: any): Promise<number> {
     const orderSQL = order ? this.parseOrder(order) : "";
 
     let docs:number;
-    const handle = transaction || this.getMainHandle();
+    const handle = this.transaction || this.getMainHandle();
 
     let wrappedEach = (err: Error, doc: any) => {
       if (err) {
@@ -446,8 +444,8 @@ export class Collection {
     return docs;
   }
 
-  async findOne(q?: any, transaction = this.transaction): Promise<any> {
-    const doc = await this.find(q, 1, transaction);
+  async findOne(q?: any): Promise<any> {
+    const doc = await this.find(q, 1);
     if (doc.length > 0) {
       return doc[0];
     } else {
@@ -455,8 +453,8 @@ export class Collection {
     }
   }
   
-  async insert(doc: any, t = this.transaction) {
-    const db = t ? t : this.getMainHandle();
+  async insert(doc: any) {
+    const db = this.getMainHandle();
     const id = doc[this.idField] || uuid.v4();
     doc[this.idField] = id;
 
@@ -471,8 +469,8 @@ export class Collection {
     return doc;
   }
 
-  async count(q: any, transaction = this.transaction): Promise<number> {
-    const db = transaction ? transaction : this.getMainHandle();
+  async count(q: any): Promise<number> {
+    const db = this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
       const whereSQL = query.toString();
@@ -492,10 +490,18 @@ export class Collection {
     }
   }
   
-  async update(q: any, update: any, options?: UpdateSpec, outerTransaction = this.transaction) {
+  update(q: any, update: any, options?: UpdateSpec): Promise<void> {
+    return this.withinTransaction(async collection => {
+      await collection._update(q, update, options);
+      return;
+    });
+  }
+  
+  private async _update(q: any, update: any, options?: UpdateSpec): Promise<void> {
 
     const query = this.queryFor(q);
-    const t = await this.beginTransaction(outerTransaction);
+    const t = this.transaction;
+    if (!t) {throw new Error("update() should take place inside a transaction");}
 
     let whereSQL: string;
 
@@ -524,85 +530,81 @@ export class Collection {
           if (!update[this.idField] && q[this.idField]) {
             update[this.idField] = q[this.idField];
           }
-          await this.insert(update, t);
-          await t.commit();
+          await this.insert(update);
           return;
         } else {
           // From mongo docs:
           // Comparison operations from the <query> will not be included in the new document.
           let newDoc = filterClauses(q);
-          newDoc = await this.insert(newDoc, t);
-          await this.update(newDoc, update, {multi: false, upsert: false}, t);
-          await t.commit();
+          newDoc = await this.insert(newDoc);
+          await this._update(newDoc, update, {multi: false, upsert: false});
           return;
         }
       }
     }
 
+    const keys = new Set<string>();
+    if (update['$inc']) {
+      for (let k of Object.keys(update['$inc'])) {
+        const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) ${optOp('WHERE', whereSQL)}`;
 
-    try {
-      const keys = new Set<string>();
-      if (update['$inc']) {
-        for (let k of Object.keys(update['$inc'])) {
-          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) ${optOp('WHERE', whereSQL)}`;
+        const args = query.values();
+        const val = update['$inc'][k];
 
-          const args = query.values();
-          const val = update['$inc'][k];
-
-          if (typeof val != 'number'){ 
-            throw new Error("Can't increment by non-number type: " + k + " += " + val);
-          }
-
-          args.unshift(val);
-          //console.log(updateSQL, args);
-          await t.runAsync(updateSQL, args);
-          keys.add(k);
+        if (typeof val != 'number'){ 
+          throw new Error("Can't increment by non-number type: " + k + " += " + val);
         }
+
+        args.unshift(val);
+        //console.log(updateSQL, args);
+        await t.runAsync(updateSQL, args);
+        keys.add(k);
       }
+    }
 
-      if (update['$set']) {
-        for (let k of Object.keys(update['$set'])) {
+    if (update['$set']) {
+      for (let k of Object.keys(update['$set'])) {
 
-          if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
+        if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
-          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', ?) ${optOp('WHERE', whereSQL)}`;
-          const args = query.values();
-          let val = update['$set'][k];
+        const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', ?) ${optOp('WHERE', whereSQL)}`;
+        const args = query.values();
+        let val = update['$set'][k];
 
-          if (typeof val != 'number' && typeof val != 'string'){ 
-            val = JSON.stringify(val);
-          }
-
-          args.unshift(val);
-          //console.log(updateSQL, args);
-          await t.runAsync(updateSQL, args);
-          keys.add(k);
+        if (typeof val != 'number' && typeof val != 'string'){ 
+          val = JSON.stringify(val);
         }
+
+        args.unshift(val);
+        //console.log(updateSQL, args);
+        await t.runAsync(updateSQL, args);
+        keys.add(k);
       }
+    }
 
-      if (update['$push']) {
-        for (let k of Object.keys(update['$push'])) {
-          if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
+    if (update['$push']) {
+      for (let k of Object.keys(update['$push'])) {
+        if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
-          // If nothing exists at that location, create an empty array
-          const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL ${optOp('AND', whereSQL)}`;
-          const args:any[] = query.values() 
-          await t.runAsync(prepareSQL, args);
+        // If nothing exists at that location, create an empty array
+        const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL ${optOp('AND', whereSQL)}`;
+        const args:any[] = query.values() 
+        await t.runAsync(prepareSQL, args);
 
 
-          // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
-          const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) ${optOp('WHERE', whereSQL)}`;
-          const val = update['$push'][k];
+        // I worked out that you can set the array element at (0-based) index n for n elements to append an element:
+        const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}[' || json_array_length(json_extract(document, '$.${k}')) || ']', ?) ${optOp('WHERE', whereSQL)}`;
+        const val = update['$push'][k];
 
-          if (typeof val == 'string' || typeof val == 'number'){ 
-            args.unshift(val);
-            /*        } else if (Array.isArray(val)){ 
-                      for (let v of val) {
-                      values.push(v);
-                      }*/
-          } else {
-            args.unshift(JSON.stringify(val));
-          }
+        if (typeof val == 'string' || typeof val == 'number'){ 
+          args.unshift(val);
+          /*        } else if (Array.isArray(val)){ 
+                    for (let v of val) {
+                    values.push(v);
+                    }*/
+      } else {
+        args.unshift(JSON.stringify(val));
+      }
 
           await t.runAsync(updateSQL, args);
 
@@ -641,14 +643,6 @@ export class Collection {
         }
       }
 
-    } catch (error) {
-      await t.rollback();
-      throw error;
     }
-
- //   const limit = (spec || {}).multi ? '' : 'LIMIT 1'
-    await t.commit();
-    return;
   }
-}
 
