@@ -1,4 +1,4 @@
-import { SQLite, Database, Statement, Transaction } from 'squeamish';
+import { SQLite, Database, Statement, Transaction, TransactionOptions } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 import * as Rx from '@reactivex/rxjs'; 
@@ -222,11 +222,11 @@ export class Collection {
     return this.store.getFromPool();
   }
 
-  async beginTransaction(t?: Transaction): Promise<Transaction> {
-    if (t) {
-      return t.beginNew();
+  async beginTransaction(t?: Transaction | TransactionOptions): Promise<Transaction> {
+    if (t && t instanceof Transaction) {
+        return t.beginNew();
     } else {
-      return this.getHandleFromPool().then(db => db.beginTransaction());
+      return this.getHandleFromPool().then(db => db.beginTransaction(t));
     }
   }
 
@@ -394,7 +394,7 @@ export class Collection {
       if (err) {
         each(err, null);
       } else {
-        const parsed = JSON.parse(doc.document);
+        const parsed = JSON.parse(doc.document) || {};
         parsed[this.idField] = doc[this.dbIdField];
         each(err, parsed);
       }
