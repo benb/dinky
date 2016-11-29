@@ -281,7 +281,7 @@ export class Collection {
     return new Query({queryObject: q}, this.name, this.arrayIndexes, operator);
   }
 
-  async insertMany(data: any[], outerTransaction?: Transaction) {
+  async insertMany(data: any[], outerTransaction = this.transaction) {
     const t = await this.beginTransaction(outerTransaction);
     await Promise.all(data.map(x => this.insert(x, t)));
     await t.commit();
@@ -325,7 +325,7 @@ export class Collection {
     await this.getMainHandle().runAsync(sql);
   }
 
-  async ensureArrayIndex(key: string, outerTransaction?: Transaction) {
+  async ensureArrayIndex(key: string, outerTransaction = this.transaction) {
     if (this.arrayIndexes.has(key)) {
       return;
     }
@@ -381,10 +381,10 @@ export class Collection {
     }).join(", ");
   }
 
-  findObservable(q?: any, limit?: number, transaction?: Transaction, order?: any): DBCursor {
+  findObservable(q?: any, limit?: number, order?: any, transaction = this.transaction): DBCursor {
 
     if (q && (q['$query'] || q['$order'])) {
-      return this.findObservable(q['$query'], limit, transaction, q['$order']);
+      return this.findObservable(q['$query'], limit, q['$order'], transaction);
     }
 
     let observable = Rx.Observable.create( (observer: Rx.Observer<any>) => {
@@ -392,29 +392,29 @@ export class Collection {
         if (err) { observer.error(err) } 
         else { observer.next(item) }
       }
-      const p = this._find(q || {}, f, limit, transaction, order);
+      const p = this._find(q || {}, f, limit, order, transaction);
       p.then(() => {observer.complete()});
     });
 
 
     observable.take = (count: number) => {
-      return this.findObservable(q, limit ? Math.min(count, limit) : count, transaction, order);
+      return this.findObservable(q, limit ? Math.min(count, limit) : count, order, transaction);
     }
 
     observable.limit = observable.take;
 
     observable.sort = (order: any) => {
-      return this.findObservable(q, limit, transaction, order);
+      return this.findObservable(q, limit, order, transaction);
     };
 
     return observable; 
   }
 
-  async find(q?: any, limit?: number, transaction?: Transaction): Promise<any[]> {
+  async find(q?: any, limit?: number, transaction = this.transaction): Promise<any[]> {
     return this.findObservable(q || {}, limit, transaction).toArray().toPromise();
   }
 
-  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, transaction?: Transaction, order?: any): Promise<number> {
+  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, order?: any, transaction?: Transaction): Promise<number> {
     const orderSQL = order ? this.parseOrder(order) : "";
 
     let docs:number;
@@ -446,7 +446,7 @@ export class Collection {
     return docs;
   }
 
-  async findOne(q?: any, transaction?: Transaction): Promise<any> {
+  async findOne(q?: any, transaction = this.transaction): Promise<any> {
     const doc = await this.find(q, 1, transaction);
     if (doc.length > 0) {
       return doc[0];
@@ -455,7 +455,7 @@ export class Collection {
     }
   }
   
-  async insert(doc: any, t?: Transaction) {
+  async insert(doc: any, t = this.transaction) {
     const db = t ? t : this.getMainHandle();
     const id = doc[this.idField] || uuid.v4();
     doc[this.idField] = id;
@@ -471,7 +471,7 @@ export class Collection {
     return doc;
   }
 
-  async count(q: any, transaction?: Transaction): Promise<number> {
+  async count(q: any, transaction = this.transaction): Promise<number> {
     const db = transaction ? transaction : this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
@@ -492,7 +492,7 @@ export class Collection {
     }
   }
   
-  async update(q: any, update: any, options?: UpdateSpec, outerTransaction?: Transaction) {
+  async update(q: any, update: any, options?: UpdateSpec, outerTransaction = this.transaction) {
 
     const query = this.queryFor(q);
     const t = await this.beginTransaction(outerTransaction);
