@@ -36,9 +36,10 @@ export class Store {
   pool: Set<Database>;
   logging = false;
 
-  async open(path: string, logging = false) {
+  async open(path: string, logging = false, journalMode = "WAL") {
     this.path = path;
     this.database = await SQLite.open(path);
+    await this.database.execAsync(`PRAGMA journal_mode=${journalMode};`);
     this.logging = logging;
     if (this.logging) {
       this.database.on('trace', console.log);
