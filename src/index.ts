@@ -247,15 +247,6 @@ export class Collection {
     return this.store.transaction;
   }
 
-  private async beginTransaction(t?: Transaction | TransactionOptions): Promise<Transaction> {
-    const outerTransaction = (t && t instanceof Transaction) ? t : this.transaction;
-    if (outerTransaction) {
-      return outerTransaction.beginNew();
-    } else {
-      return this.store.getFromPool().then(db => db.beginTransaction(t as (TransactionOptions | undefined)));
-    }
-  }
-
   private getMainHandle() {
     return this.transaction || this.store.database;
   }
@@ -324,49 +315,51 @@ export class Collection {
   }
 
   async ensureArrayIndex(key: string) {
+    await this.withinTransaction(async collection => {
+      await collection._ensureArrayIndex(key);
+      this.arrayIndexes.set(key, collection.arrayIndexes.get(key));
+    });
+  }
+
+  async _ensureArrayIndex(key: string) {
     if (this.arrayIndexes.has(key)) {
       return;
     }
 
-    const t = await this.beginTransaction();
+    const t = this.transaction;
+    if (!t) {throw new Error("Need a transaction to ensureArrayIndex")};
 
-    try {
-     const tableName = `${this.name}_${key}`;
-      await t.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
+    const tableName = `${this.name}_${key}`;
+    await t.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
 
-      await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
-      let sql = `CREATE TRIGGER "${tableName}_insert_trigger" AFTER INSERT ON "${this.name}"
-      BEGIN
-      INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
-      END;`;
-      //console.log(sql);
-      await t.runAsync(sql);
+    await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
+    let sql = `CREATE TRIGGER "${tableName}_insert_trigger" AFTER INSERT ON "${this.name}"
+    BEGIN
+    INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
+    END;`;
+    //console.log(sql);
+    await t.runAsync(sql);
 
-      await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_update_trigger"`);
-      sql = `CREATE TRIGGER "${tableName}_update_trigger" AFTER UPDATE ON "${this.name}"
-      BEGIN
-      DELETE FROM "${tableName}" WHERE _id = OLD._id;
-      INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
-      END;`;
-      //console.log(sql);
-      await t.runAsync(sql);
+    await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_update_trigger"`);
+    sql = `CREATE TRIGGER "${tableName}_update_trigger" AFTER UPDATE ON "${this.name}"
+    BEGIN
+    DELETE FROM "${tableName}" WHERE _id = OLD._id;
+    INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
+    END;`;
+    //console.log(sql);
+    await t.runAsync(sql);
 
-      await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_delete"`);
-      sql = `CREATE TRIGGER "${tableName}_delete" AFTER DELETE ON "${this.name}"
-      BEGIN
-      DELETE FROM "${tableName}" WHERE _id = OLD._id;
-      END;`;
-      //console.log(sql);
-      await t.runAsync(sql);
+    await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_delete"`);
+    sql = `CREATE TRIGGER "${tableName}_delete" AFTER DELETE ON "${this.name}"
+    BEGIN
+    DELETE FROM "${tableName}" WHERE _id = OLD._id;
+    END;`;
+    //console.log(sql);
+    await t.runAsync(sql);
 
-      //TODO update delete
-      await t.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
-      this.arrayIndexes.set(key, tableName);
-      await t.commit();
-    } catch (error) {
-      t.rollback();
-      throw error;
-    }
+    //TODO update delete
+    await t.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
+    this.arrayIndexes.set(key, tableName);
   }
 
   parseOrder(order: any) {
