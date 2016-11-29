@@ -30,11 +30,17 @@ export interface DBCursor extends Rx.Observable<any> {
   sort(orderObject: any): DBCursor;
 }
 
+export interface UpdateSpec {
+  upsert?: boolean;
+  multi?: boolean;
+}
+
 export class Store { 
   database: Database;
   path: string;
   pool: Set<Database>;
   logging = false;
+  transaction?: Transaction;
 
   async open(path: string, logging = false, journalMode = "WAL") {
     this.path = path;
@@ -49,6 +55,9 @@ export class Store {
   }
 
   async getFromPool(): Promise<Database> {
+    if (this.transaction) {
+      throw new Error("Don't open a handle within a transaction!");
+    }
     if (this.pool.size > 0 ){
       const db = this.pool.values().next().value;
       this.pool.delete(db);
@@ -61,6 +70,27 @@ export class Store {
       }
       return db;
     }
+  }
+
+  async withinTransaction(fn:(s: Store) => Promise<void>, to?: TransactionOptions) {
+
+    const s = new Store();
+    s.path = this.path;
+    s.database = this.database;
+    s.logging = this.logging;
+    if (this.transaction) {
+      s.transaction = await this.transaction.beginNew();
+    } else {
+      const db = await this.getFromPool();
+      s.transaction = await db.beginTransaction(to);
+    }
+
+    Promise.resolve(s).then(fn).then(() => {
+      if (s.transaction) { s.transaction.commit(); }
+    }, () => {
+      if (s.transaction) { s.transaction.rollback(); }
+    });
+
   }
 
   async returnToPool(db: Database) {
@@ -77,11 +107,6 @@ export class Store {
     return this.database.closeAsync();
   }
 
-}
-
-export interface UpdateSpec {
-  upsert?: boolean;
-  multi?: boolean;
 }
 
 type KeyValuePair = [string, any];
@@ -218,11 +243,16 @@ export class Collection {
   idField = "_id";
   private dbIdField = "_id";
 
+  get transaction() {
+    return this.store.transaction;
+  }
+
   private async getHandleFromPool(): Promise<Database> {
     return this.store.getFromPool();
   }
 
-  async beginTransaction(t?: Transaction | TransactionOptions): Promise<Transaction> {
+
+  private async beginTransaction(t?: Transaction | TransactionOptions): Promise<Transaction> {
     if (t && t instanceof Transaction) {
         return t.beginNew();
     } else {
