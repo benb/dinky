@@ -244,11 +244,45 @@ test("Basic Rx", async (t) => {
   const people = await store.getCollection(awkwardString);
 
   t.plan(6);
-  people.findRx().subscribe(item => {
+  people.findObservable().subscribe(item => {
     t.truthy(item.firstname);
   });
 
   await store.close();
 });
 
+test("Orderding", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+  const allPeople:any[] = await people.find({$order: {firstname: 1}});
+  const sortedPeople = allPeople.sort((a, b) => {
+    if(a.firstname < b.firstname) return -1;
+    if(a.firstname > b.firstname) return 1;
+    return 0;
+  });
+  t.deepEqual(allPeople.map(x=>x.firstname), sortedPeople.map(x=>x.firstname), "Database should return ordered list for 1");
 
+  const reversePeople = await people.find({$order: {firstname: -1}});
+  t.deepEqual(reversePeople.map(x=>x.firstname), sortedPeople.reverse().map(x=>x.firstname), "Database should return ordered list for 1");
+
+  const bothNamesOrdered = await people.findObservable().sort({firstname: 1, lastname: 1}).toArray().toPromise();
+  const doubleSortedPeople= allPeople.sort((a, b) => {
+    if(a.firstname < b.firstname) return -1;
+    if(a.firstname > b.firstname) return 1;
+    if(a.lastname < b.lastname) return -1;
+    if(a.lastname > b.lastname) return 1;
+    return 0;
+  });
+  t.deepEqual(doubleSortedPeople, bothNamesOrdered, "Should fully order output");
+
+  const bothNamesOrderedReversed = await people.find({$order: {firstname: -1, lastname: -1}});
+  t.deepEqual(doubleSortedPeople.reverse(), bothNamesOrderedReversed, "Should fully order output");
+
+});
+
+test("DBCursor", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+  const twoPeople = await people.findObservable().limit(2).toArray().toPromise();
+  t.is(twoPeople.length, 2, "limit() works");
+});

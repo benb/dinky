@@ -3,11 +3,11 @@ import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 import * as Rx from '@reactivex/rxjs'; 
 
-function optOp(operator: string, value: string) {
-  if (value && value.trim().length > 0) {
+function optOp(operator: string, value?: string | number): string {
+  if (value && value.toString().trim().length > 0) {
     return `${operator} ${value}`;
   } else {
-    return value;
+    return "";
   }
 }
 
@@ -22,6 +22,12 @@ function logDatabase(db: Database) {
       throw err;
     })};
   }
+}
+
+export interface DBCursor extends Rx.Observable<any> {
+  limit(limit: number): DBCursor;
+  take(limit: number): DBCursor;
+  sort(orderObject: any): DBCursor;
 }
 
 export class Store { 
@@ -280,8 +286,8 @@ export class Collection {
     let sql = `CREATE INDEX IF NOT EXISTS "${name}" on "${this.name}"(`;
 
     sql = sql + Object.keys(spec).map((key: string) => {
-      const order:number = spec[key];
-      return "json_extract(document, '$." + key + "') " + (order ? "DESC" : "ASC");
+      const order = spec[key];
+      return "json_extract(document, '$." + key + "') " + (order < 0 ? "DESC" : "ASC");
     }).join(", ");
     
     sql = sql + ");"
@@ -334,24 +340,52 @@ export class Collection {
     }
   }
 
-  
+  parseOrder(order: any) {
+    return Object.keys(order).map( key => {
+      if (key === this.idField) {
+        return `_id ${parseInt(order[key]) < 0 ? 'DESC' : 'ASC'}`;
+      } else {
+        return `json_extract(document, '$.${key}') ${parseInt(order[key]) < 0 ? 'DESC' : 'ASC'}`;
+      }
+    }).join(", ");
+  }
 
-  findRx(q?: any, limit?: number, transaction?: Transaction): Rx.Observable<any> {
-    let subject = new Rx.Subject();
-    const f = (err: Error, item: any) => { 
-      if (err) { subject.error(err) } 
-      else { subject.next(item) }
+  findObservable(q?: any, limit?: number, transaction?: Transaction, order?: any): DBCursor {
+
+    if (q && (q['$query'] || q['$order'])) {
+      return this.findObservable(q['$query'], limit, transaction, q['$order']);
     }
-    const p = this._find(q || {}, f, limit, transaction);
-    p.then(() => {subject.complete()});
-    return subject;
+
+    let observable = Rx.Observable.create( (observer: Rx.Observer<any>) => {
+      const f = (err: Error, item: any) => { 
+        if (err) { observer.error(err) } 
+        else { observer.next(item) }
+      }
+      const p = this._find(q || {}, f, limit, transaction, order);
+      p.then(() => {observer.complete()});
+    });
+
+
+    observable.take = (count: number) => {
+      return this.findObservable(q, limit ? Math.min(count, limit) : count, transaction, order);
+    }
+
+    observable.limit = observable.take;
+
+    observable.sort = (order: any) => {
+      return this.findObservable(q, limit, transaction, order);
+    };
+
+    return observable; 
   }
 
   async find(q?: any, limit?: number, transaction?: Transaction): Promise<any[]> {
-    return this.findRx(q || {}, limit, transaction).toArray().toPromise();
+    return this.findObservable(q || {}, limit, transaction).toArray().toPromise();
   }
 
-  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, transaction?: Transaction): Promise<number> {
+  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, transaction?: Transaction, order?: any): Promise<number> {
+    const orderSQL = order ? this.parseOrder(order) : "";
+
     let docs:number;
     const handle = transaction || this.getMainHandle();
 
@@ -373,11 +407,10 @@ export class Collection {
       if (joins) {
         joins = joins;
       }
-      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${(limit == undefined) ? "" : "LIMIT " + limit}`;
-      //console.log(sql, args);
+      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${optOp('LIMIT', limit)} ${optOp('ORDER BY', orderSQL)}`;
       docs = await handle.eachAsync(sql, args, wrappedEach);
     } else {
-      docs = await handle.eachAsync(`SELECT * from "${this.name}"`, wrappedEach);
+      docs = await handle.eachAsync(`SELECT * from "${this.name}" ${optOp('LIMIT', limit)} ${optOp('ORDER BY', orderSQL)}`, wrappedEach);
     }
     return docs;
   }
