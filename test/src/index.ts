@@ -3,6 +3,7 @@ import { Store } from '../../';
 import { test } from 'ava';
 import * as temp from 'temp';
 import * as uuid from 'uuid';
+import * as Rx from '@reactivex/rxjs';
 
 temp.track();
 
@@ -172,11 +173,13 @@ test("Array $push and $pop", async (t) => {
   }
 
   const tvWatcher = await people.findOne( {hobbies: {'$in' : ['TV'] } });
+  t.truthy(tvWatcher, "Can retrieve based on array query");
   t.is(tvWatcher.firstname, "Homer", "Can retrieve based on array query");
 
   const hobbies = tvWatcher.hobbies;
   await people.update({firstname: 'Homer'}, {'$pop': {'hobbies' : 1 } });
-  let dbHobbies = (await people.findOne({firstname: 'Homer'})).hobbies;
+  homer = await people.findOne({firstname: 'Homer'})
+  let dbHobbies = homer.hobbies;
   hobbies.pop();
   t.deepEqual(hobbies, dbHobbies, "Standard $pop works");
 
@@ -261,8 +264,13 @@ test("Basic Rx", async (t) => {
   const people = await store.getCollection(awkwardString);
 
   t.plan(6);
-  people.findObservable().subscribe(item => {
-    t.truthy(item.firstname);
+  await new Promise( (resolve, reject) => {
+    people.findObservable()
+    .do({complete: resolve})
+    .catch((err, _) => {reject(err); return Rx.Observable.of("ERROR");})
+    .subscribe((item: any) => {
+      t.truthy(item.firstname);
+    });
   });
 
   await store.close();

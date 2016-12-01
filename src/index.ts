@@ -389,15 +389,7 @@ export class Collection {
       return this.findObservable(q['$query'], limit, q['$order']);
     }
 
-    let observable = Rx.Observable.create( (observer: Rx.Observer<any>) => {
-      const f = (err: Error, item: any) => { 
-        if (err) { observer.error(err) } 
-        else { observer.next(item) }
-      }
-      const p = this._find(q || {}, f, limit, order);
-      p.then(() => {observer.complete()});
-    });
-
+    let observable: DBCursor  = this._find(q, limit, order) as any; 
 
     observable.take = (count: number) => {
       return this.findObservable(q, limit ? Math.min(count, limit) : count, order);
@@ -416,20 +408,16 @@ export class Collection {
     return this.findObservable(q || {}, limit).toArray().toPromise();
   }
 
-  private async _find(q: any | null, each:(err: Error, item: any) => void, limit?: number, order?: any): Promise<number> {
+  private _find(q: any | null, limit?: number, order?: any): Rx.Observable<any> {
     const orderSQL = order ? this.parseOrder(order) : "";
 
-    let docs:number;
+    let docs:Rx.Observable<any>;
     const handle = this.transaction || this.getMainHandle();
 
-    let wrappedEach = (err: Error, doc: any) => {
-      if (err) {
-        each(err, null);
-      } else {
-        const parsed = JSON.parse(doc.document) || {};
-        parsed[this.idField] = doc[this.dbIdField];
-        each(err, parsed);
-      }
+    let populate = (doc: any) => {
+      const parsed = JSON.parse(doc.document) || {};
+      parsed[this.idField] = doc[this.dbIdField];
+      return parsed;
     }
 
     if (q && Object.keys(q).length > 0) {
@@ -441,11 +429,11 @@ export class Collection {
         joins = joins;
       }
       const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`;
-      docs = await handle.eachAsync(sql, wrappedEach, args);
+      docs = Rx.Observable.from(handle.select(sql, args));
     } else {
-      docs = await handle.eachAsync(`SELECT * from "${this.name}" ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`, wrappedEach);
+      docs = Rx.Observable.from(handle.select(`SELECT * from "${this.name}" ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`));
     }
-    return docs;
+    return docs.map(populate);
   }
 
   async findOne(q?: any): Promise<any> {
