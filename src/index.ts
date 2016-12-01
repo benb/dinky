@@ -131,11 +131,13 @@ class Query {
   otherTable?: string;
   arrayIndexes: Map<string, string>;
   name: string;
+  idField: string;
 
 
-  constructor(q:SubQueryContainer | QueryObjectContainer, tableName: string, arrayIndexes: Map<string, string>, operator?: "AND" | "OR") {
+  constructor(q:SubQueryContainer | QueryObjectContainer, tableName: string, arrayIndexes: Map<string, string>, idField: string, operator?: "AND" | "OR") {
     this.arrayIndexes = arrayIndexes;
     this.name = tableName;
+    this.idField = idField;
     if ((<SubQueryContainer>q).subQueries) {
       this.subQueries = (<SubQueryContainer>q).subQueries;
       this.operator = operator || "AND";
@@ -148,11 +150,11 @@ class Query {
   parseKeyValue(key: string, value: any) : ([string, any] | Query) {
     if (key.startsWith('$')) {
       if (key.toLowerCase() == '$and') {
-        return new Query({queryObject: value}, this.name, this.arrayIndexes,  "AND");
+        return new Query({queryObject: value}, this.name, this.arrayIndexes, this.idField, "AND");
       } else if (key.toLowerCase() == '$or') {
-        return new Query({queryObject: value}, this.name, this.arrayIndexes, "OR");
+        return new Query({queryObject: value}, this.name, this.arrayIndexes, this.idField, "OR");
       } else if (key.toLowerCase() == '$not') {
-        return new Query({queryObject: value}, this.name, this.arrayIndexes);
+        return new Query({queryObject: value}, this.name, this.arrayIndexes, this.idField);
       } else {
         throw new Error("Unsupported query term " + key);
       }
@@ -165,7 +167,7 @@ class Query {
 
           const table = this.arrayIndexes.get(key);
           const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query({subQueries: [[`"${table}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
+          const q = new Query({subQueries: [[`"${table}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes, this.idField);
           q.otherTable = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
           //console.log(q);
           return q;
@@ -176,7 +178,7 @@ class Query {
           const tableFunc = `json_each(document, '$.${key}') AS ${identifier}`;
 
           const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query({subQueries: [[`"${identifier}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes);
+          const q = new Query({subQueries: [[`"${identifier}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes, this.idField);
           q.otherTable = ", " + tableFunc;
           //console.log(q);
           return q;
@@ -197,18 +199,18 @@ class Query {
 
   parseComponent(component: any) : ([string, any] | Query)[] {
     if (Array.isArray(component)) {
-      return component.map(x => new Query({queryObject: x}, this.name, this.arrayIndexes));
+      return component.map(x => new Query({queryObject: x}, this.name, this.arrayIndexes, this.idField));
     }
     if (!component) {return []}
 
     const queries = Object
       .keys(component)
-      .filter(x => x != '_id')
+      .filter(x => x != this.idField)
       .map( (key) => {
         return this.parseKeyValue(key, component[key]);
       });
-    if (component['_id']) {
-      queries.push([`_id IS ?`, component['_id']]);
+    if (component[this.idField]) {
+      queries.push([`_id IS ?`, component[this.idField]]);
     }
     return queries;
   }
@@ -272,11 +274,7 @@ export class Collection {
   }
 
   private queryFor(q: any, operator?: "AND" | "OR") {
-    if (this.idField != this.dbIdField) {
-      q[this.dbIdField] = q[this.idField];
-      delete q[this.idField];
-    }
-    return new Query({queryObject: q}, this.name, this.arrayIndexes, operator);
+    return new Query({queryObject: q}, this.name, this.arrayIndexes, this.idField, operator);
   }
 
   insertMany(data: any[]): Promise<void> {
@@ -337,6 +335,8 @@ export class Collection {
         if (metadata) {
           await this.refreshArrayIndexes(metadata.arrayIndexes);
         }
+      } else {
+        this.idField = this.dbIdField;
       }
       this.initializedStatus = "initialized";
     }
@@ -554,8 +554,8 @@ export class Collection {
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
-          if (!update[this.idField] && q[this.idField]) {
-            update[this.idField] = q[this.idField];
+          if (!update[this.idField] && id) {
+            update[this.idField] = id;
           }
           await this.insert(update);
           return;

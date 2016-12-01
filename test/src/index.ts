@@ -333,6 +333,10 @@ test("Custom ID", async (t) => {
   t.truthy(person.custom, "Should have an identifier");
   const samePerson = await people.findOne({"custom": person.custom});
   t.deepEqual(person, samePerson, "Lookup should work with custom ID");
+
+  await people.update({"custom":"foo"}, {$set: {firstname: "Foo"}}, {upsert: true});
+  const foo = await people.findOne({firstname: "Foo"});
+  t.is(foo.custom, "foo", "Should use custom ID for upsert");
 });
 
 
