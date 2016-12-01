@@ -4,6 +4,8 @@ import * as uuid from 'uuid';
 import * as Rx from '@reactivex/rxjs'; 
 import * as Bluebird from 'bluebird';
 
+const metadataTableName = "litto_metadata";
+
 function optOp(operator: string, value?: string | number): string {
   if (value && value.toString().trim().length > 0) {
     return `${operator} ${value}`;
@@ -42,6 +44,17 @@ export class Store {
   pool: Set<Database>;
   logging = false;
   transaction?: Transaction;
+  _metadata?: Collection;
+
+  async getMetadata(): Promise<Collection> {
+    if (this._metadata) {
+      return this._metadata;
+    } else {
+      const m = await this.getCollection(metadataTableName);
+      this._metadata = m;
+      return m;
+    }
+  }
 
   async open(path: string, logging = false, journalMode = "WAL") {
     this.path = path;
@@ -52,6 +65,7 @@ export class Store {
       this.database.sqlite.on('trace', console.log);
       //logDatabase(this.database);
     }
+    this._metadata = await this.getCollection(metadataTableName);
     this.pool = new Set<Database>();
   }
 
@@ -96,8 +110,8 @@ export class Store {
     this.pool.add(db);
   }
 
-  getCollection(name: string) {
-    const c = new Collection(this, name);
+  getCollection(name: string, idField?: string) {
+    const c = new Collection(this, name, idField);
     return c.initialize();
   }
 
@@ -242,7 +256,7 @@ export class Collection {
   name: string;
   private initializedStatus: CollectionInitializedStatus;
   arrayIndexes: Map<string, string>;
-  idField = "_id";
+  idField: string;
   private dbIdField = "_id";
 
   get transaction() {
@@ -271,27 +285,27 @@ export class Collection {
     });
   }
 
-  constructor(store: Store, name: string, status: CollectionInitializedStatus = "uninitialized") {
+  constructor(store: Store, name: string, idField?: string, status: CollectionInitializedStatus = "uninitialized") {
     this.store = store;
     this.name = name;
+    if (idField) {
+      this.idField = idField;
+    }
     this.arrayIndexes = new Map<string, string>();
     this.initializedStatus = status;
   }
 
   async withinTransaction(fn:(c: Collection) => Promise<void>, to?: TransactionOptions) {
     return this.store.withinTransaction(async s => {
-     const c = new Collection(s, this.name, this.initializedStatus)
+     const c = new Collection(s, this.name, this.idField, this.initializedStatus)
      //TODO this needs to be sourced from a metadata table;
-     c.idField = this.idField;
      c.arrayIndexes = this.arrayIndexes;
      await fn(c);
     }, to);
   }
 
-  async refreshArrayIndexes() {
-    await this.getMainHandle().runAsync(`CREATE TABLE IF NOT EXISTS collection_array_indexes (sourceTable TEXT, keypath TEXT, indexTable TEXT);`);
-    const arrayIndexes = await this.getMainHandle().allAsync("SELECT * from collection_array_indexes WHERE sourceTable = ?", this.name);
-    for (let index of arrayIndexes) {
+  async refreshArrayIndexes(arrayIndexes: any[]) {
+    for (let index of arrayIndexes || []) {
       this.arrayIndexes.set(index.keypath, index.indexTable);
     }
   }
@@ -299,13 +313,34 @@ export class Collection {
   async initialize() {
     if (this.initializedStatus == "uninitialized") {
       this.initializedStatus = "initializing";
-      return this.getMainHandle()
-        .runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`)
-        .then(() => {this.refreshArrayIndexes()})
-        .then(() => {this.initializedStatus = "initialized";})
-        .then(() => this);;
+      const db = this.getMainHandle()
+      await db.runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`)
+      if (this.name != metadataTableName) {
+        const metadataCollection = await this.store.getMetadata();
+        const metadata = await metadataCollection.findOne({_id: this.name});
+
+        if (!metadata) {
+          await metadataCollection.insert({_id: this.name, idField: this.dbIdField});
+        }
+
+        if (this.idField) {
+          metadata.idField = this.idField;
+          await metadataCollection.update({_id: this.name}, {$set: {'idField': this.idField}}, {upsert: true});
+        } else { 
+          if (metadata && metadata.idField) {
+            this.idField =  metadata.idField;
+          } else {
+            this.idField = this.dbIdField;
+          }
+        }
+
+        if (metadata) {
+          await this.refreshArrayIndexes(metadata.arrayIndexes);
+        }
+      }
+      this.initializedStatus = "initialized";
     }
-    return Promise.resolve(this);
+    return this;
   }
 
   async ensureIndex(spec: {[key: string] : number}, options?: IndexOptions) {
@@ -369,7 +404,8 @@ export class Collection {
     await t.runAsync(sql);
 
     //TODO update delete
-    await t.runAsync('INSERT INTO collection_array_indexes VALUES (?, ?, ?)', [this.name, key, tableName]);
+    const metadata =await this.store.getMetadata();
+    await metadata.update({_id: this.name}, {$push: {arrayIndexes: {keyPath: key, indexTable: tableName} } });
     this.arrayIndexes.set(key, tableName);
   }
 
@@ -412,7 +448,7 @@ export class Collection {
     const orderSQL = order ? this.parseOrder(order) : "";
 
     let docs:Rx.Observable<any>;
-    const handle = this.transaction || this.getMainHandle();
+    const handle = this.getMainHandle();
 
     let populate = (doc: any) => {
       const parsed = JSON.parse(doc.document) || {};
