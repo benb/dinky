@@ -1,5 +1,5 @@
 {
-  "name": "unsqlite",
+  "name": "litto",
   "version": "0.0.1",
   "description": "Schemaless JSON document store backed by SQLite",
   "main": "dist/index.js",
@@ -30,7 +30,10 @@
   "dependencies": {
     "@reactivex/rxjs": "^5.0.0-rc.4",
     "@types/uuid": "^2.0.29",
+    "js-object-parser": "^1.0.1",
+    "otaat-repl": "^1.0.2",
     "squeamish": "0.0.1",
-    "uuid": "^3.0.0"
+    "uuid": "^3.0.0",
+    "vorpal": "^1.11.4"
   }
 }

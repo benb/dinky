@@ -1,7 +1,8 @@
-import { SQLite, Database, Statement, Transaction, TransactionOptions } from 'squeamish';
+import { Database, Statement, Transaction, TransactionOptions } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 import * as Rx from '@reactivex/rxjs'; 
+import * as Bluebird from 'bluebird';
 
 function optOp(operator: string, value?: string | number): string {
   if (value && value.toString().trim().length > 0) {
@@ -44,12 +45,12 @@ export class Store {
 
   async open(path: string, logging = false, journalMode = "WAL") {
     this.path = path;
-    this.database = await SQLite.open(path);
+    this.database = new Database(path);
     await this.database.execAsync(`PRAGMA journal_mode=${journalMode};`);
     this.logging = logging;
     if (this.logging) {
-      this.database.on('trace', console.log);
-      logDatabase(this.database);
+      this.database.sqlite.on('trace', console.log);
+      //logDatabase(this.database);
     }
     this.pool = new Set<Database>();
   }
@@ -63,10 +64,10 @@ export class Store {
       this.pool.delete(db);
       return db;
     } else {
-      const db = await SQLite.open(this.path);
+      const db = new Database(this.path);
       if (this.logging) {
-        db.on('trace', console.log);
-        logDatabase(db);
+        db.sqlite.on('trace', console.log);
+        //logDatabase(db);
       }
       return db;
     }
@@ -78,7 +79,7 @@ export class Store {
     s.database = this.database;
     s.logging = this.logging;
     if (this.transaction) {
-      s.transaction = await this.transaction.beginNew();
+      s.transaction = await this.transaction.beginTransaction();
     } else {
       const db = await this.getFromPool();
       s.transaction = await db.beginTransaction(to);
@@ -95,10 +96,9 @@ export class Store {
     this.pool.add(db);
   }
 
-  async getCollection(name: string) {
+  getCollection(name: string) {
     const c = new Collection(this, name);
-    await c.initialize();
-    return c;
+    return c.initialize();
   }
 
   async close() {
@@ -299,10 +299,13 @@ export class Collection {
   async initialize() {
     if (this.initializedStatus == "uninitialized") {
       this.initializedStatus = "initializing";
-      await this.getMainHandle().runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`);
-      await this.refreshArrayIndexes();
-      this.initializedStatus = "initialized";
+      return this.getMainHandle()
+        .runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`)
+        .then(() => {this.refreshArrayIndexes()})
+        .then(() => {this.initializedStatus = "initialized";})
+        .then(() => this);;
     }
+    return Promise.resolve(this);
   }
 
   async ensureIndex(spec: {[key: string] : number}, options?: IndexOptions) {
@@ -437,10 +440,10 @@ export class Collection {
       if (joins) {
         joins = joins;
       }
-      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${optOp('LIMIT', limit)} ${optOp('ORDER BY', orderSQL)}`;
-      docs = await handle.eachAsync(sql, args, wrappedEach);
+      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`;
+      docs = await handle.eachAsync(sql, wrappedEach, args);
     } else {
-      docs = await handle.eachAsync(`SELECT * from "${this.name}" ${optOp('LIMIT', limit)} ${optOp('ORDER BY', orderSQL)}`, wrappedEach);
+      docs = await handle.eachAsync(`SELECT * from "${this.name}" ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`, wrappedEach);
     }
     return docs;
   }
