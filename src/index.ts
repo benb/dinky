@@ -317,14 +317,14 @@ export class Collection {
       await db.runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`)
       if (this.name != metadataTableName) {
         const metadataCollection = await this.store.getMetadata();
-        const metadata = await metadataCollection.findOne({_id: this.name});
+        let metadata = await metadataCollection.findOne({_id: this.name});
 
         if (!metadata) {
           await metadataCollection.insert({_id: this.name, idField: this.dbIdField});
+          metadata = {};
         }
 
         if (this.idField) {
-          metadata.idField = this.idField;
           await metadataCollection.update({_id: this.name}, {$set: {'idField': this.idField}}, {upsert: true});
         } else { 
           if (metadata && metadata.idField) {

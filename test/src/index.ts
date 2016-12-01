@@ -15,11 +15,11 @@ async function tempDatabase(logging = false) {
   return store;
 }
 
-async function basicDatabase(logging = false) {
+async function basicDatabase(logging = false, idField = "_id") {
   const store = await tempDatabase(logging);
 
   await store.database.execAsync(`DROP TABLE IF EXISTS "${awkwardString}"`);
-  const people = await store.getCollection(awkwardString);
+  const people = await store.getCollection(awkwardString, idField);
   await people.insertMany([
    {firstname: "Maggie", lastname: "Simpson", hobbies: ["dummies"]},
    {firstname: "Bart", lastname: "Simpson", hobbies: ["skateboarding", "boxcar racing", "annoying Homer"]},
@@ -325,4 +325,14 @@ test("Transactions", async(t) => {
   const person = await people.findOne({firstname: "Fred"});
   t.is(person.lastname, "Flintstone", "Object created within transaction");
 });
+
+test("Custom ID", async (t) => {
+  const store = await basicDatabase(false, "custom");
+  const people = await store.getCollection(awkwardString);
+  const person = await people.findOne();
+  t.truthy(person.custom, "Should have an identifier");
+  const samePerson = await people.findOne({"custom": person.custom});
+  t.deepEqual(person, samePerson, "Lookup should work with custom ID");
+});
+
 
