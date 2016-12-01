@@ -38,6 +38,10 @@ export interface UpdateSpec {
   multi?: boolean;
 }
 
+export interface DeleteSpec {
+  justOne: boolean;
+}
+
 export class Store { 
   database: Database;
   path: string;
@@ -496,7 +500,7 @@ export class Collection {
     return doc;
   }
 
-  async count(q: any): Promise<number> {
+  async count(q: any = {}): Promise<number> {
     const db = this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
@@ -516,15 +520,21 @@ export class Collection {
       return doc['COUNT(*)'];
     }
   }
-  
-  update(q: any, update: any, options?: UpdateSpec): Promise<void> {
+
+  update(q: any, update: any, options: UpdateSpec = {multi: false, upsert: false}): Promise<void> {
     return this.withinTransaction(async collection => {
       await collection._update(q, update, options);
       return;
     });
   }
-  
-  private async _update(q: any, update: any, options?: UpdateSpec): Promise<void> {
+
+  delete(q: any, options: DeleteSpec = {justOne: false}) {
+    return this.withinTransaction(async collection => {
+      await collection._update(q, "DELETE", options);
+    });
+  }
+
+  private async _update(q: any, update: any, options: UpdateSpec | DeleteSpec): Promise<void> {
 
     const query = this.queryFor(q);
     const t = this.transaction;
@@ -533,14 +543,27 @@ export class Collection {
     let whereSQL: string;
 
     let limit = ""
-    if (!options || !options.multi)  {
-      limit = "LIMIT 1";
+
+    let operation: ("UPDATE" | "DELETE") = "UPDATE";
+
+    //DELETE 
+    if (typeof update === 'string' && update.toLowerCase() == 'delete') {
+        operation = "DELETE";
+    }
+
+    if (operation == "UPDATE") {
+      const updateOptions = options as UpdateSpec;
+      if (!updateOptions.multi)  {
+        limit = "LIMIT 1";
+      }
+    } else {
+      const deleteOptions = options as DeleteSpec;
+        limit = deleteOptions.justOne ? "LIMIT 1" : "";
     }
 
     // Unless the sqlite database is compiled with SQLITE_ENABLE_UPDATE_DELETE_LIMIT
     // we can't set a LIMIT at the end of a statement without making the query more
     // complicated
-
     if (query.join().length > 0 || limit != "") {
       whereSQL = `_id IN (SELECT DISTINCT "${this.name}"._id FROM "${this.name}" ${query.join()} ${optOp('WHERE', query.toString())} ${limit} )`
     } else {
@@ -549,7 +572,7 @@ export class Collection {
 
     // emulate mongo behaviour
     // https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
-    if (options && options.upsert) {
+    if (operation === "UPDATE" && (options as UpdateSpec).upsert) {
       const matchingID = await t.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""}`, query.values());
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
@@ -569,7 +592,15 @@ export class Collection {
         }
       }
     }
-
+    
+    if (operation == "DELETE") {
+        const args = query.values();
+        const updateSQL = `DELETE FROM "${this.name}" ${optOp('WHERE', whereSQL)}`;
+        await t.runAsync(updateSQL, args);
+        return;
+    }
+    
+    //UPDATE
     const keys = new Set<string>();
     if (update['$inc']) {
       for (let k of Object.keys(update['$inc'])) {

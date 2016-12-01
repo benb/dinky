@@ -339,4 +339,17 @@ test("Custom ID", async (t) => {
   t.is(foo.custom, "foo", "Should use custom ID for upsert");
 });
 
+test("Deletion", async t => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+  await people.delete({firstname: "Bart"});
+  t.is(await people.count(), 5);
+  await people.delete({firstname: "Homer"});
+  t.is(await people.count(), 4);
+  await people.delete({lastname: "Simpson"}, {justOne: true});
+  t.is(await people.count(), 3);
+  await people.delete({lastname: "Simpson"});
+  t.is(await people.count(), 1);
+});
+
 
