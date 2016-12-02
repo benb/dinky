@@ -364,14 +364,14 @@ export class Collection {
     await this.getMainHandle().runAsync(sql);
   }
 
-  async ensureArrayIndex(key: string) {
+  async ensureArrayIndex(key: string, order:("ASC" | "DESC") = "ASC") {
     await this.withinTransaction(async collection => {
-      await collection._ensureArrayIndex(key);
+      await collection._ensureArrayIndex(key, "ASC");
       this.arrayIndexes.set(key, collection.arrayIndexes.get(key));
     });
   }
 
-  async _ensureArrayIndex(key: string) {
+  async _ensureArrayIndex(key: string, order: "ASC" | "DESC") {
     if (this.arrayIndexes.has(key)) {
       return;
     }
@@ -381,6 +381,7 @@ export class Collection {
 
     const tableName = `${this.name}_${key}`;
     await t.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
+    await t.runAsync(`CREATE INDEX IF NOT EXISTS "${tableName}_${order}" ON "${tableName}" ("value" ${order})`);
 
     await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
     let sql = `CREATE TRIGGER "${tableName}_insert_trigger" AFTER INSERT ON "${this.name}"
@@ -408,7 +409,7 @@ export class Collection {
     await t.runAsync(sql);
 
     //TODO update delete
-    const metadata =await this.store.getMetadata();
+    const metadata = await this.store.getMetadata();
     await metadata.update({_id: this.name}, {$push: {arrayIndexes: {keyPath: key, indexTable: tableName} } });
     this.arrayIndexes.set(key, tableName);
   }
