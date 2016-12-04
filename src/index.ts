@@ -4,6 +4,8 @@ import * as uuid from 'uuid';
 import * as Rx from '@reactivex/rxjs'; 
 import * as Bluebird from 'bluebird';
 
+export { NewQuery } from './parse';
+
 const metadataTableName = "litto_metadata";
 
 function optOp(operator: string, value?: string | number): string {
@@ -163,7 +165,7 @@ class Query {
         throw new Error("Unsupported query term " + key);
       }
     } else {
-      if (typeof value == 'string' || typeof value == 'number') {
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
         return [`json_extract(document, '$.${key}') IS ?`, value];
       } else if (Array.isArray(value['$in'])) {
         //console.log(this.arrayIndexes, key);
@@ -278,7 +280,14 @@ export class Collection {
   }
 
   private queryFor(q: any, operator?: "AND" | "OR") {
-    return new Query({queryObject: q}, this.name, this.arrayIndexes, this.idField, operator);
+    try {
+      return new Query({queryObject: q}, this.name, this.arrayIndexes, this.idField, operator);
+    } catch (error) {
+      console.log("FAILED TO BUILD QUERY FOR ");
+      console.dir(q, {depth: null});
+      console.log(operator);
+      throw error;
+    }
   }
 
   insertMany(data: any[]): Promise<void> {
@@ -364,9 +373,9 @@ export class Collection {
     await this.getMainHandle().runAsync(sql);
   }
 
-  async ensureArrayIndex(key: string, order:("ASC" | "DESC") = "ASC") {
+  async ensureArrayIndex(key: string, order:(1 | -1) = 1) {
     await this.withinTransaction(async collection => {
-      await collection._ensureArrayIndex(key, "ASC");
+      await collection._ensureArrayIndex(key, order == 1 ? "ASC" : "DESC");
       this.arrayIndexes.set(key, collection.arrayIndexes.get(key));
     });
   }
@@ -380,7 +389,7 @@ export class Collection {
     if (!t) {throw new Error("Need a transaction to ensureArrayIndex")};
 
     const tableName = `${this.name}_${key}`;
-    await t.runAsync(`CREATE TABLE "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
+    await t.runAsync(`CREATE TABLE IF NOT EXISTS "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
     await t.runAsync(`CREATE INDEX IF NOT EXISTS "${tableName}_${order}" ON "${tableName}" ("value" ${order})`);
 
     await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);

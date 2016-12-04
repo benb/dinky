@@ -1,10 +1,10 @@
-const parser = require('mongo-parse');
+const parse = require('mongo-parse').parse;
 
-function getJSONPath(sqlColumn: string, jsonPath: string) {
+function getJSONPath(sqlColumn: string, jsonPath: string): string {
   return `json_extract(${sqlColumn}, "$.${jsonPath}")`;
 }
 
-type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne';
+export type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne';
 const operatorMap = {
   '$eq': 'IS',
   '$gt': '>',
@@ -14,25 +14,57 @@ const operatorMap = {
   '$ne': '!=',
 }
 
-const littoJSON = getJSONPath.bind('documents');
+function littoJSON(jsonPath: string) { return getJSONPath('documents', jsonPath); }
 
 function operatorFor(o: Operator) {
-  return operatorMap[o];   
+  return (operatorMap as any)[o];
+}
+
+function formatOperand(operand: any): any {
+  if (Array.isArray(operand)) {
+    return "(" + operand.map(formatOperand).join(", ") + ")";
+  }
+  if (!operand) {
+    return "NULL";
+  }
+  return "?";
+}
+
+function filterOperand(operand: any): any {
+  if (Array.isArray(operand)) {
+    return operand.map(filterOperand);
+  }
+  if (operand == null) {
+    return "NULL";
+  } else {
+    return operand;
+  }
 }
 
 function partToString(p: QueryPart): [string, any[]] {
-  const values = []; 
-  let res:[string, any[]][];
+  const values:any[] = []; 
+  let res: Array<[string, Array<any>]>;
+  let array: any[]; 
+  let sql: string | undefined = undefined;
   switch(p.operator) {
     case '$and': 
       res = p.parts.map(partToString);
-    return [res.map(x=>x[0]).join(" AND "), [].concat(...res.map(x=>x[1]))];
+      array = ([] as Array<any>).concat(...res.map(x => x[1]));
+    return [res.map(x=>x[0]).join(" AND "), array];
     case '$or': 
       res = p.parts.map(partToString);
-    return [res.map(x=>x[0]).join(" OR "), [].concat(...res.map(x=>x[1]))];
+      array = ([] as Array<any>).concat(...res.map(x => x[1]));
+    return [res.map(x=>x[0]).join(" OR "), array];
     case '$not': 
-      res = p.parts.map(partToString);
-    return [" IS NOT " + res.map(x=>x[0]).join(" AND "), [].concat(...res.map(x=>x[1]))];
+      if (!sql) {sql = " IS NOT ";}
+    case '$nin': 
+      if (!sql) {sql = " NOT IN ";}
+    case '$in': 
+      if (!sql) {sql = " IN ";}
+      if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
+      sql = sql + formatOperand(p.operand);
+      sql = littoJSON(p.field as string) + sql;
+      return [sql, filterOperand(p.operand)];
     case '$gt':
       case '$gte':
       case '$lt':
@@ -40,40 +72,47 @@ function partToString(p: QueryPart): [string, any[]] {
       case '$ne':
       case '$eq':
       if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-    values.push(p.operand);
-    return [`${littoJSON(p.field)} ${operatorFor(p.operator)} ?`, values];
+    return [`${littoJSON(p.field as string)} ${operatorFor(p.operator)} ?`, filterOperand(p.operand)];
     case undefined:
       if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
     values.push(p.operand);
-    return [`${littoJSON(p.field)} ${operatorFor('$eq')} ?`, values];
+    return [`${littoJSON(p.field as string)} ${operatorFor('$eq')} ?`, filterOperand(p.operand)];
     default:
-      throw new Error("TODO");
+      throw new Error("TODO" + p);
   }
 }
 
-declare class QueryObject {
+export declare class QueryObject {
   parts: QueryPart[];
 }
 
-class QueryPart {
+export class QueryPart {
   field?: string;
   operator?: Operator;
   operand?: any;
-  parts?: QueryPart[];
+  parts: QueryPart[];
   implicitField?: boolean;
 }
 
-class Query {
+export class NewQuery {
   parsedMongo: QueryObject;
+  _results: Array<[string, Array<any>]>;
   constructor(q: any) {
-    this.parsedMongo = parser(q);
+    this.parsedMongo = parse(q);
   }
 
-  toString(): string {
-    return this.parsedMongo.parts.map(partToString).join(' AND ');
+  get results() {
+    if (!this._results) {
+      this._results = this.parsedMongo.parts.map(partToString);
+    }
+    return this._results;
+  }
+
+  get sql(): string {
+    return this.results.map(x => x[0]).join(' AND ');
   }
 
   values(): any[] {
-    return [];
+    return ([] as Array<any>).concat(...this.results.map((x: [string, any[]]) => x[1]));
   }
 }

@@ -352,4 +352,11 @@ test("Deletion", async t => {
   t.is(await people.count(), 1);
 });
 
+test("boolean values", async t => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+  await people.update({'firstname': 'lisa'}, {'$set': {deleted: true}});
+  t.is(await people.count({'$not': {deleted: true }}), 4);
+});
+
 
