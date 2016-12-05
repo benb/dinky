@@ -6,7 +6,7 @@
   "typings": "dist/index",
   "scripts": {
     "prepublish": "tsc",
-    "test": "tsc -p test/tsconfig.json && ava",
+    "test": "tsc -p test/tsconfig.json && ava --timeout=10s",
     "bat": "tsc && npm tst"
   },
   "ava": {

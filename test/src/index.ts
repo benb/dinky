@@ -96,7 +96,7 @@ test("Queries", async (t) => {
   const lisasAndSimpsons = await people.find({'$or': [{firstname: "Lisa"}, {lastname: "Simpson"}]});
   t.is(lisasAndSimpsons.length, 6, "Five Simpsons and a Kudrow");
 
-  const nonSimpsons = await people.find({lastname: {$not: "Simpson"}});
+  const nonSimpsons = await people.find({lastname: {$ne: "Simpson"}});
   t.is(nonSimpsons.length, 1, "One non-Simpson");
 });
 
@@ -355,8 +355,7 @@ test("Deletion", async t => {
 test("boolean values", async t => {
   const store = await basicDatabase();
   const people = await store.getCollection(awkwardString);
-  await people.update({'firstname': 'lisa'}, {'$set': {deleted: true}});
-  t.is(await people.count({'$not': {deleted: true }}), 4);
+  await people.update({'firstname': 'Lisa'}, {'$set': {deleted: true}}, {multi: true});
+  const deletedCount = await people.count({'deleted': true });
+  t.is(deletedCount, 2, "Count on boolean should work");
 });
-
-

@@ -3,8 +3,8 @@ import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 import * as Rx from '@reactivex/rxjs'; 
 import * as Bluebird from 'bluebird';
-
-export { NewQuery } from './parse';
+import { Query } from './query';
+export { Query } from './query';
 
 const metadataTableName = "litto_metadata";
 
@@ -128,133 +128,6 @@ export class Store {
 }
 
 type KeyValuePair = [string, any];
-type SubQueryContainer = {subQueries: (Query | KeyValuePair)[]};
-type QueryObjectContainer = {queryObject: any};
-
-class Query {
-  subQueries: (Query | KeyValuePair)[];
-  operator: "AND" | "OR";
-  otherTable?: string;
-  arrayIndexes: Map<string, string>;
-  name: string;
-  idField: string;
-
-
-  constructor(q:SubQueryContainer | QueryObjectContainer, tableName: string, arrayIndexes: Map<string, string>, idField: string, operator?: "AND" | "OR") {
-    this.arrayIndexes = arrayIndexes;
-    this.name = tableName;
-    this.idField = idField;
-    if ((<SubQueryContainer>q).subQueries) {
-      this.subQueries = (<SubQueryContainer>q).subQueries;
-      this.operator = operator || "AND";
-    } else {
-      this.subQueries = this.parseComponent((<QueryObjectContainer>q).queryObject);
-      this.operator = operator || "AND";
-    }
-  }
-
-  parseKeyValue(key: string, value: any) : ([string, any] | Query) {
-    if (key.startsWith('$')) {
-      if (key.toLowerCase() == '$and') {
-        return new Query({queryObject: value}, this.name, this.arrayIndexes, this.idField, "AND");
-      } else if (key.toLowerCase() == '$or') {
-        return new Query({queryObject: value}, this.name, this.arrayIndexes, this.idField, "OR");
-      } else if (key.toLowerCase() == '$not') {
-        return new Query({queryObject: value}, this.name, this.arrayIndexes, this.idField);
-      } else {
-        throw new Error("Unsupported query term " + key);
-      }
-    } else {
-      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-        return [`json_extract(document, '$.${key}') IS ?`, value];
-      } else if (Array.isArray(value['$in'])) {
-        //console.log(this.arrayIndexes, key);
-        if (this.arrayIndexes.has(key)) { //indexed
-
-          const table = this.arrayIndexes.get(key);
-          const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query({subQueries: [[`"${table}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes, this.idField);
-          q.otherTable = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
-          //console.log(q);
-          return q;
-
-        } else { //unindexed
-
-          const identifier = 'foo'; //TODO 
-          const tableFunc = `json_each(document, '$.${key}') AS ${identifier}`;
-
-          const qMarks = "?, ".repeat(value['$in'].length -1) + "?";
-          const q = new Query({subQueries: [[`"${identifier}".value IN (${qMarks})`, value['$in']]]}, this.name, this.arrayIndexes, this.idField);
-          q.otherTable = ", " + tableFunc;
-          //console.log(q);
-          return q;
-
-        }
-      } else if (value['$not'] || value['$NOT']) {
-        const finalVal = value['$not'] || value['$NOT'];
-        if (typeof finalVal == 'string' || typeof finalVal== 'number') {
-          return [`json_extract(document, '$.${key}') IS NOT ?`, finalVal];
-        } else {
-          throw new Error("Unsupported query " + value);
-        }
-      } else {
-        throw new Error("Unsupported query " + value);
-      }
-    }
-  }
-
-  parseComponent(component: any) : ([string, any] | Query)[] {
-    if (Array.isArray(component)) {
-      return component.map(x => new Query({queryObject: x}, this.name, this.arrayIndexes, this.idField));
-    }
-    if (!component) {return []}
-
-    const queries = Object
-      .keys(component)
-      .filter(x => x != this.idField)
-      .map( (key) => {
-        return this.parseKeyValue(key, component[key]);
-      });
-    if (component[this.idField]) {
-      queries.push([`_id IS ?`, component[this.idField]]);
-    }
-    return queries;
-  }
-
-
-  toString(): string {
-    return this.subQueries.map( q => {
-      if (q instanceof Query) {
-        return "(" + q.toString() + ")";
-      } else {
-        return q[0];
-      }
-    }).join(" " + this.operator + " ");
-  }
-
-  values(): any[] {
-    return this.subQueries.map( q => {
-      if (q instanceof Query) {
-        return q.values();
-      } else {
-        return q[1];
-      }
-    }).reduce((x,y) => x.concat(y), []);
-  }
-
-  join(): string[] {
-    let joins: string[] = [];
-    if (this.otherTable) {
-      joins.push(this.otherTable);
-    }
-    this.subQueries.forEach( q => {
-      if (q instanceof Query) {
-        joins = joins.concat(q.join());
-      }
-    });
-    return joins;
-  }
-}
 
 export type CollectionInitializedStatus = "uninitialized" | "initializing" | "initialized";
 export type IndexOptions = { unique: boolean };
@@ -265,6 +138,13 @@ export class Collection {
   private initializedStatus: CollectionInitializedStatus;
   arrayIndexes: Map<string, string>;
   idField: string;
+
+  idFields(): {[id: string]: string} {
+    const o:{[id: string]: string} = {};
+    o[this.idField] = this.dbIdField;
+    return o;
+  }
+
   private dbIdField = "_id";
 
   get transaction() {
@@ -281,7 +161,7 @@ export class Collection {
 
   private queryFor(q: any, operator?: "AND" | "OR") {
     try {
-      return new Query({queryObject: q}, this.name, this.arrayIndexes, this.idField, operator);
+      return new Query(q, this.name, this.arrayIndexes, this.idFields());
     } catch (error) {
       console.log("FAILED TO BUILD QUERY FOR ");
       console.dir(q, {depth: null});
@@ -389,13 +269,13 @@ export class Collection {
     if (!t) {throw new Error("Need a transaction to ensureArrayIndex")};
 
     const tableName = `${this.name}_${key}`;
-    await t.runAsync(`CREATE TABLE IF NOT EXISTS "${tableName}" AS SELECT _id, json_each.* from "${this.name}", json_each(document, '$.${key}')`);
+    await t.runAsync(`CREATE TABLE IF NOT EXISTS "${tableName}" AS SELECT _id, json_each.* FROM "${this.name}", json_each(document, '$.${key}')`);
     await t.runAsync(`CREATE INDEX IF NOT EXISTS "${tableName}_${order}" ON "${tableName}" ("value" ${order})`);
 
     await t.runAsync(`DROP TRIGGER IF EXISTS "${tableName}_insert_trigger"`);
     let sql = `CREATE TRIGGER "${tableName}_insert_trigger" AFTER INSERT ON "${this.name}"
     BEGIN
-    INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
+    INSERT INTO "${tableName}" SELECT NEW._id, json_each.* FROM json_each(NEW.document, '$.${key}');
     END;`;
     //console.log(sql);
     await t.runAsync(sql);
@@ -404,7 +284,7 @@ export class Collection {
     sql = `CREATE TRIGGER "${tableName}_update_trigger" AFTER UPDATE ON "${this.name}"
     BEGIN
     DELETE FROM "${tableName}" WHERE _id = OLD._id;
-    INSERT INTO "${tableName}" SELECT NEW._id, json_each.* from json_each(NEW.document, '$.${key}');
+    INSERT INTO "${tableName}" SELECT NEW._id, json_each.* FROM json_each(NEW.document, '$.${key}');
     END;`;
     //console.log(sql);
     await t.runAsync(sql);
@@ -434,7 +314,6 @@ export class Collection {
   }
 
   findObservable(q?: any, limit?: number, order?: any): DBCursor {
-
     if (q && (q['$query'] || q['$order'])) {
       return this.findObservable(q['$query'], limit, q['$order']);
     }
@@ -472,13 +351,10 @@ export class Collection {
 
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
-      const whereSQL = query.toString();
-      const args = query.values();
-      let joins = query.join().join(" ");
-      if (joins) {
-        joins = joins;
-      }
-      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document from "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`;
+      const whereSQL = query.sql;
+      const args = query.values;
+      let joins = query.join;
+      const sql = `SELECT DISTINCT "${this.name}"._id, "${this.name}".document FROM "${this.name}" ${joins} ${optOp('WHERE', whereSQL)} ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`;
       docs = Rx.Observable.from(handle.select(sql, args));
     } else {
       docs = Rx.Observable.from(handle.select(`SELECT * from "${this.name}" ${optOp('ORDER BY', orderSQL)} ${optOp('LIMIT', limit)}`));
@@ -494,19 +370,22 @@ export class Collection {
       return null;
     }
   }
-  
-  async insert(doc: any): Promise<any> {
-    const db = this.getMainHandle();
-    const id = doc[this.idField] || uuid.v4();
-    doc[this.idField] = id;
-    const json = JSON.stringify(doc, (key, value) => {
+
+  strippedJSON(doc: any) {
+    return JSON.stringify(doc, (key, value) => {
       if (key === this.idField) {
         return undefined;
       } else {
         return value;
       }
     });
-    await db.runAsync(`INSERT INTO "${this.name}" VALUES (?, json(?));`, id, json);
+  }
+  
+  async insert(doc: any): Promise<any> {
+    const db = this.getMainHandle();
+    const id = doc[this.idField] || uuid.v4();
+    doc[this.idField] = id;
+    await db.runAsync(`INSERT INTO "${this.name}" VALUES (?, json(?));`, id, this.strippedJSON(doc));
     return doc;
   }
 
@@ -514,9 +393,9 @@ export class Collection {
     const db = this.getMainHandle();
     if (q && Object.keys(q).length > 0) {
       const query = this.queryFor(q);
-      const whereSQL = query.toString();
-      const args = query.values();
-      let joins = query.join().join(" ");
+      const whereSQL = query.sql;
+      const args = query.values;
+      let joins = query.join;
       if (joins) {
         joins = joins;
       }
@@ -574,16 +453,16 @@ export class Collection {
     // Unless the sqlite database is compiled with SQLITE_ENABLE_UPDATE_DELETE_LIMIT
     // we can't set a LIMIT at the end of a statement without making the query more
     // complicated
-    if (query.join().length > 0 || limit != "") {
-      whereSQL = `_id IN (SELECT DISTINCT "${this.name}"._id FROM "${this.name}" ${query.join()} ${optOp('WHERE', query.toString())} ${limit} )`
+    if (query.join.length > 0 || limit != "") {
+      whereSQL = `_id IN (SELECT DISTINCT "${this.name}"._id FROM "${this.name}" ${query.join} ${optOp('WHERE', query.sql)} ${limit} )`
     } else {
-      whereSQL = `${query.toString()}`;
+      whereSQL = `${query.sql}`;
     }
 
     // emulate mongo behaviour
     // https://docs.mongodb.com/v3.2/reference/method/db.collection.update/#upsert-behavior
     if (operation === "UPDATE" && (options as UpdateSpec).upsert) {
-      const matchingID = await t.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""}`, query.values());
+      const matchingID = await t.getAsync(`SELECT _id FROM "${this.name}" ${optOp('WHERE', whereSQL)} ${(limit.length == 0) ? "LIMIT 1" : ""}`, query.values);
       if (!matchingID) {
         const id = update[this.idField] || q[this.idField];
         if (!containsClauses(update)) {
@@ -604,19 +483,19 @@ export class Collection {
     }
     
     if (operation == "DELETE") {
-        const args = query.values();
+        const args = query.values;
         const updateSQL = `DELETE FROM "${this.name}" ${optOp('WHERE', whereSQL)}`;
         await t.runAsync(updateSQL, args);
         return;
     }
     
-    //UPDATE
+    //operation == "UPDATE"
     const keys = new Set<string>();
     if (update['$inc']) {
       for (let k of Object.keys(update['$inc'])) {
         const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', coalesce(json_extract(document, '$.${k}'), 0) + ?) ${optOp('WHERE', whereSQL)}`;
 
-        const args = query.values();
+        const args = query.values;
         const val = update['$inc'][k];
 
         if (typeof val != 'number'){ 
@@ -624,7 +503,6 @@ export class Collection {
         }
 
         args.unshift(val);
-        //console.log(updateSQL, args);
         await t.runAsync(updateSQL, args);
         keys.add(k);
       }
@@ -636,10 +514,10 @@ export class Collection {
         if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
 
         const updateSQL = `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', ?) ${optOp('WHERE', whereSQL)}`;
-        const args = query.values();
+        const args = query.values;
         let val = update['$set'][k];
 
-        if (typeof val != 'number' && typeof val != 'string'){ 
+        if (typeof val != 'number' && typeof val != 'string' && typeof val != 'boolean'){ 
           val = JSON.stringify(val);
         }
 
@@ -656,7 +534,7 @@ export class Collection {
 
         // If nothing exists at that location, create an empty array
         const prepareSQL= `UPDATE "${this.name}" SET document = json_set(document, '$.${k}', json_array()) WHERE json_extract(document, '$.${k}') IS NULL ${optOp('AND', whereSQL)}`;
-        const args:any[] = query.values() 
+        const args:any[] = query.values 
         await t.runAsync(prepareSQL, args);
 
 
@@ -692,18 +570,15 @@ export class Collection {
           } else {
             throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
           }
-          const args:any[] = query.values();
+          const args:any[] = query.values;
           await t.runAsync(updateSQL, args);
           keys.add(k);
         }
       }
 
       if (!containsClauses(update)) {
-        if (update[this.idField]) {
-          delete update[this.idField];
-        }
         const updateSQL = `UPDATE "${this.name}" SET document = json(?) ${optOp('WHERE', whereSQL)}`;
-        const args = [JSON.stringify(update), ...query.values()];
+        const args = [this.strippedJSON(update), ...query.values];
         await t.runAsync(updateSQL, args);
       } else {
         if (keys.size == 0) {

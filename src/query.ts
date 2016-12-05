@@ -1,7 +1,9 @@
 const parse = require('mongo-parse').parse;
+import * as uuid from 'uuid';
 
 function getJSONPath(sqlColumn: string, jsonPath: string): string {
   return `json_extract(${sqlColumn}, "$.${jsonPath}")`;
+//  return `ifnull(json_extract(${sqlColumn}, "$.${jsonPath}"), "SOMETHING ELSE")`;
 }
 
 export type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne' | '$not' | '$nin' | '$in';
@@ -12,12 +14,10 @@ const operatorMap = {
   '$lt': '<',
   '$lte': '<=',
   '$ne': '!=',
-  '$not': "NOT",
+  '$not': "IS NOT",
   '$nin': "NOT IN", 
   '$in': "IN"
 }
-
-function littoJSON(jsonPath: string) { return getJSONPath('documents', jsonPath); }
 
 function formatOperator(o: Operator) {
   return (operatorMap as any)[o];
@@ -37,6 +37,10 @@ function filterOperand(operand: any): any {
   if (Array.isArray(operand)) {
     return operand.map(filterOperand);
   }
+/*  while (typeof operand === 'object') {
+    const k = Object.keys(operand)[0];
+    operand = operand[k];
+  }*/
   if (operand == null) {
     return "NULL";
   } else {
@@ -62,11 +66,34 @@ class QueryResult {
   join?: string;
 }
 
-export class NewQuery {
+export class Query {
   parsedMongo: QueryObject;
   arrayIndexes: Map<string, string>;
   name: string;
+  nonJSONFields: {[field: string]: string};
   private _results: QueryResult[];
+
+  littoJSON(jsonPath: string, operand: any = {}) { 
+
+    /*
+    let kp = jsonPath;
+    let obj = operand;
+    while (typeof operand === 'object' && Object.keys(operand).length > 0) {
+      if (Object.keys(operand).length > 1) {
+        throw new Error("Unsupported operand in query " +  operand);
+      }
+      const key = Object.keys(operand)[0];
+      kp = kp + "." + key;
+      operand = operand[key];
+    }*/
+
+    if (this.nonJSONFields[jsonPath]) {
+      return this.nonJSONFields[jsonPath];
+    } else {
+      return getJSONPath('document', jsonPath);
+    }
+
+  }
 
   private partToString(p: QueryPart): QueryResult {
     switch(p.operator) {
@@ -83,18 +110,20 @@ export class NewQuery {
         return {sql, operands};
       }
       case '$not': 
+        throw new Error("$not is unsupported");
       case '$nin': 
       case '$in':  {
         if (!p.field) {throw new Error("Strange output in parsed query, expected field: " + p);}
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        let sql:string = littoJSON(p.field as string) + " " + formatOperator(p.operator) + " " + formatOperand(p.operand);
         const operands = filterOperand(p.operand);
-        let join = ""
+        const joinTable = uuid.v4();
+        let join = `, json_each(${this.littoJSON(p.field as string, p.operand)}) as "${joinTable}"`;
+        let sql:string = `"${joinTable}".value ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
 
         const table = this.arrayIndexes.get(p.field);
         if (table) {
           join = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
-          sql = `"${table}".values ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
+          sql = `"${table}".value ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
         }
 
         return {sql, operands, join};
@@ -106,13 +135,13 @@ export class NewQuery {
       case '$ne':
       case '$eq': {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        const sql = `${littoJSON(p.field as string)} ${formatOperator(p.operator)} ?`;
+        const sql = `${this.littoJSON(p.field as string, p.operand)} ${formatOperator(p.operator)} ?`;
         const operands = filterOperand(p.operand);
         return {sql, operands};
       }
       case undefined: {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        const sql = `${littoJSON(p.field as string)} ${formatOperator('$eq')} ?`;
+        const sql = `${this.littoJSON(p.field as string, p.operand)} ${formatOperator('$eq')} ?`;
         const operands = filterOperand(p.operand);
         return {sql, operands};
       }
@@ -121,12 +150,11 @@ export class NewQuery {
     }
   }
 
-
-
-  constructor(q: any, name: string, arrayIndexes: Map<string, string>) {
+  constructor(q: any, name: string, arrayIndexes: Map<string, string>, nonJSONFields:{[id: string]: string} = {_id: '_id'}) {
     this.parsedMongo = parse(q);
     this.name = name;
     this.arrayIndexes = arrayIndexes;
+    this.nonJSONFields = nonJSONFields;
   }
 
   private get results() {
@@ -137,14 +165,20 @@ export class NewQuery {
   }
 
   get sql(): string {
-    return this.results.map(x => x.sql).join(' AND ');
+    const sql = this.results.map(x => x.sql).join(' AND ');
+    return sql;
   }
 
   get values(): any[] {
-    return ([] as Array<any>).concat(...this.results.map((x: QueryResult) => x.operands));
+    const v = ([] as Array<any>).concat(...this.results.map((x: QueryResult) => x.operands));
+    return v;
   }
 
   get join(): string {
-    return this.results.map(x => x.join).join(', ');
+    const joins = this.results.map(x => x.join).filter(x => {return x && x.length > 0});
+    if (joins.length > 0) {
+      return joins.join(" ");
+    }
+    return "";
   }
 }
