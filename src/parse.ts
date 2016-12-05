@@ -4,7 +4,7 @@ function getJSONPath(sqlColumn: string, jsonPath: string): string {
   return `json_extract(${sqlColumn}, "$.${jsonPath}")`;
 }
 
-export type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne';
+export type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne' | '$not' | '$nin' | '$in';
 const operatorMap = {
   '$eq': 'IS',
   '$gt': '>',
@@ -12,11 +12,14 @@ const operatorMap = {
   '$lt': '<',
   '$lte': '<=',
   '$ne': '!=',
+  '$not': "NOT",
+  '$nin': "NOT IN", 
+  '$in': "IN"
 }
 
 function littoJSON(jsonPath: string) { return getJSONPath('documents', jsonPath); }
 
-function operatorFor(o: Operator) {
+function formatOperator(o: Operator) {
   return (operatorMap as any)[o];
 }
 
@@ -41,47 +44,6 @@ function filterOperand(operand: any): any {
   }
 }
 
-function partToString(p: QueryPart): [string, any[]] {
-  const values:any[] = []; 
-  let res: Array<[string, Array<any>]>;
-  let array: any[]; 
-  let sql: string | undefined = undefined;
-  switch(p.operator) {
-    case '$and': 
-      res = p.parts.map(partToString);
-      array = ([] as Array<any>).concat(...res.map(x => x[1]));
-    return [res.map(x=>x[0]).join(" AND "), array];
-    case '$or': 
-      res = p.parts.map(partToString);
-      array = ([] as Array<any>).concat(...res.map(x => x[1]));
-    return [res.map(x=>x[0]).join(" OR "), array];
-    case '$not': 
-      if (!sql) {sql = " IS NOT ";}
-    case '$nin': 
-      if (!sql) {sql = " NOT IN ";}
-    case '$in': 
-      if (!sql) {sql = " IN ";}
-      if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-      sql = sql + formatOperand(p.operand);
-      sql = littoJSON(p.field as string) + sql;
-      return [sql, filterOperand(p.operand)];
-    case '$gt':
-      case '$gte':
-      case '$lt':
-      case '$lte':
-      case '$ne':
-      case '$eq':
-      if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-    return [`${littoJSON(p.field as string)} ${operatorFor(p.operator)} ?`, filterOperand(p.operand)];
-    case undefined:
-      if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-    values.push(p.operand);
-    return [`${littoJSON(p.field as string)} ${operatorFor('$eq')} ?`, filterOperand(p.operand)];
-    default:
-      throw new Error("TODO" + p);
-  }
-}
-
 export declare class QueryObject {
   parts: QueryPart[];
 }
@@ -94,25 +56,95 @@ export class QueryPart {
   implicitField?: boolean;
 }
 
+class QueryResult {
+  sql: string;
+  operands: any[];
+  join?: string;
+}
+
 export class NewQuery {
   parsedMongo: QueryObject;
-  _results: Array<[string, Array<any>]>;
-  constructor(q: any) {
-    this.parsedMongo = parse(q);
+  arrayIndexes: Map<string, string>;
+  name: string;
+  private _results: QueryResult[];
+
+  private partToString(p: QueryPart): QueryResult {
+    switch(p.operator) {
+      case '$and':  {
+        const res = p.parts.map(x => this.partToString(x));
+        const operands = ([] as Array<any>).concat(...res.map(x => x.operands));
+        const sql = res.map(x=>x.sql).join(" AND ");
+        return {sql, operands};
+      }
+      case '$or': { 
+        const res = p.parts.map(x => this.partToString(x));
+        const operands = ([] as Array<any>).concat(...res.map(x => x.operands));
+        const sql = res.map(x => x.sql).join(" OR ");
+        return {sql, operands};
+      }
+      case '$not': 
+      case '$nin': 
+      case '$in':  {
+        if (!p.field) {throw new Error("Strange output in parsed query, expected field: " + p);}
+        if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
+        let sql:string = littoJSON(p.field as string) + " " + formatOperator(p.operator) + " " + formatOperand(p.operand);
+        const operands = filterOperand(p.operand);
+        let join = ""
+
+        const table = this.arrayIndexes.get(p.field);
+        if (table) {
+          join = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
+          sql = `"${table}".values ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
+        }
+
+        return {sql, operands, join};
+      }
+      case '$gt':
+      case '$gte':
+      case '$lt':
+      case '$lte':
+      case '$ne':
+      case '$eq': {
+        if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
+        const sql = `${littoJSON(p.field as string)} ${formatOperator(p.operator)} ?`;
+        const operands = filterOperand(p.operand);
+        return {sql, operands};
+      }
+      case undefined: {
+        if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
+        const sql = `${littoJSON(p.field as string)} ${formatOperator('$eq')} ?`;
+        const operands = filterOperand(p.operand);
+        return {sql, operands};
+      }
+      default:
+        throw new Error("TODO" + p);
+    }
   }
 
-  get results() {
+
+
+  constructor(q: any, name: string, arrayIndexes: Map<string, string>) {
+    this.parsedMongo = parse(q);
+    this.name = name;
+    this.arrayIndexes = arrayIndexes;
+  }
+
+  private get results() {
     if (!this._results) {
-      this._results = this.parsedMongo.parts.map(partToString);
+      this._results = this.parsedMongo.parts.map(x => this.partToString(x));
     }
     return this._results;
   }
 
   get sql(): string {
-    return this.results.map(x => x[0]).join(' AND ');
+    return this.results.map(x => x.sql).join(' AND ');
   }
 
-  values(): any[] {
-    return ([] as Array<any>).concat(...this.results.map((x: [string, any[]]) => x[1]));
+  get values(): any[] {
+    return ([] as Array<any>).concat(...this.results.map((x: QueryResult) => x.operands));
+  }
+
+  get join(): string {
+    return this.results.map(x => x.join).join(', ');
   }
 }
