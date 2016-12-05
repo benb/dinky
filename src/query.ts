@@ -27,7 +27,7 @@ function formatOperand(operand: any): any {
   if (Array.isArray(operand)) {
     return "(" + operand.map(formatOperand).join(", ") + ")";
   }
-  if (!operand) {
+  if (operand === null) {
     return "NULL";
   }
   return "?";
@@ -35,17 +35,12 @@ function formatOperand(operand: any): any {
 
 function filterOperand(operand: any): any {
   if (Array.isArray(operand)) {
-    return operand.map(filterOperand);
+    return operand.map(filterOperand).filter(x => {return x && (x!=[])});
   }
-/*  while (typeof operand === 'object') {
-    const k = Object.keys(operand)[0];
-    operand = operand[k];
-  }*/
-  if (operand == null) {
-    return "NULL";
-  } else {
-    return operand;
+  if (operand === null) {
+    return [];
   }
+  return operand;
 }
 
 export declare class QueryObject {
@@ -74,25 +69,11 @@ export class Query {
   private _results: QueryResult[];
 
   littoJSON(jsonPath: string, operand: any = {}) { 
-
-    /*
-    let kp = jsonPath;
-    let obj = operand;
-    while (typeof operand === 'object' && Object.keys(operand).length > 0) {
-      if (Object.keys(operand).length > 1) {
-        throw new Error("Unsupported operand in query " +  operand);
-      }
-      const key = Object.keys(operand)[0];
-      kp = kp + "." + key;
-      operand = operand[key];
-    }*/
-
     if (this.nonJSONFields[jsonPath]) {
       return this.nonJSONFields[jsonPath];
     } else {
       return getJSONPath('document', jsonPath);
     }
-
   }
 
   private partToString(p: QueryPart): QueryResult {

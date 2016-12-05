@@ -359,3 +359,32 @@ test("boolean values", async t => {
   const deletedCount = await people.count({'deleted': true });
   t.is(deletedCount, 2, "Count on boolean should work");
 });
+
+test("null", async t => {
+  /*
+     Test in mongo console:
+> db.test.find();
+{ "_id" : ObjectId("58458bda989b1c04b5fde61f"), "boolitem" : true }
+{ "_id" : ObjectId("58458bdd989b1c04b5fde620"), "boolitem" : false }
+{ "_id" : ObjectId("58458be7989b1c04b5fde621"), "something" : "foo" }
+> db.test.find({'boolitem': false});
+{ "_id" : ObjectId("58458bdd989b1c04b5fde620"), "boolitem" : false }
+> db.test.find({'boolitem': true});
+{ "_id" : ObjectId("58458bda989b1c04b5fde61f"), "boolitem" : true }
+> db.test.find({'boolitem': null});
+{ "_id" : ObjectId("58458be7989b1c04b5fde621"), "something" : "foo" }
+*/
+  const store = await tempDatabase();
+  const test = await store.getCollection('test');
+  for (let object of [{boolitem: false}, {boolitem: true}, {something: "foo"}]) {
+    await test.insert(object);
+  }
+
+  const trues = (await test.find({boolitem: true})).map(x => {delete x._id; return x});
+  const falses = (await test.find({boolitem: false})).map(x => {delete x._id; return x});
+  const nulls = (await test.find({boolitem: null})).map(x => {delete x._id; return x});
+
+  t.deepEqual(trues, [{boolitem: true}], "true lookup works");
+  t.deepEqual(falses, [{boolitem: false}], "false lookup works");
+  t.deepEqual(nulls, [{something: "foo"}], "null lookup works");
+});
