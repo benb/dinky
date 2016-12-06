@@ -33,6 +33,7 @@ export interface DBCursor extends Rx.Observable<any> {
   limit(limit: number): DBCursor;
   take(limit: number): DBCursor;
   sort(orderObject: any): DBCursor;
+  count(): Rx.Observable<number>;
 }
 
 export interface UpdateSpec {
@@ -330,6 +331,10 @@ export class Collection {
       return this.findObservable(q, limit, order);
     };
 
+    observable.count = () => {
+      return Rx.Observable.from(this.count(q));
+    }
+
     return observable; 
   }
 
@@ -407,6 +412,16 @@ export class Collection {
     } else {
       const doc:any = await db.getAsync(`SELECT COUNT(*) from "${this.name}"`);
       return doc['COUNT(*)'];
+    }
+  }
+
+  save(doc: any) { 
+    if (doc[this.idField]) {
+      const id:any = {};
+      id[this.idField] = doc[this.idField];
+      return this.update(id, doc);
+    } else {
+      return this.insert(doc);
     }
   }
 
