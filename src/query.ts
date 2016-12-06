@@ -19,8 +19,8 @@ const operatorMap = {
   '$in': "IN"
 }
 
-function formatOperator(o: Operator) {
-  return (operatorMap as any)[o];
+function formatOperator(o?: Operator) {
+  return (operatorMap as any)[o || '$eq'];
 }
 
 function formatOperand(operand: any): any {
@@ -114,12 +114,7 @@ export class Query {
       case '$lt':
       case '$lte':
       case '$ne':
-      case '$eq': {
-        if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        const sql = `${this.littoJSON(p.field as string, p.operand)} ${formatOperator(p.operator)} ?`;
-        const operands = filterOperand(p.operand);
-        return {sql, operands};
-      }
+      case '$eq': 
       case undefined: {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
         const sql = `${this.littoJSON(p.field as string, p.operand)} ${formatOperator('$eq')} ?`;
