@@ -117,7 +117,7 @@ export class Query {
       case '$eq': 
       case undefined: {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        const sql = `${this.littoJSON(p.field as string, p.operand)} ${formatOperator('$eq')} ?`;
+        let sql = `(${this.littoJSON(p.field as string, p.operand)} ${formatOperator(p.operator || '$eq')} ?)`;
         const operands = filterOperand(p.operand);
         return {sql, operands};
       }
