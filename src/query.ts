@@ -6,7 +6,7 @@ function getJSONPath(sqlColumn: string, jsonPath: string): string {
 //  return `ifnull(json_extract(${sqlColumn}, "$.${jsonPath}"), "SOMETHING ELSE")`;
 }
 
-export type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne' | '$not' | '$nin' | '$in';
+export type Operator =  '$and' | '$or' | '$not' | '$in' | '$eq' | '$gt' | '$gte' | '$lt' | '$lte' | '$nin' | '$ne' | '$not' | '$nin' | '$in' | '$like';
 const operatorMap = {
   '$eq': 'IS',
   '$gt': '>',
@@ -16,7 +16,8 @@ const operatorMap = {
   '$ne': '!=',
   '$not': "IS NOT",
   '$nin': "NOT IN", 
-  '$in': "IN"
+  '$in': "IN",
+  '$like': "LIKE"
 }
 
 function formatOperator(o?: Operator) {
@@ -115,6 +116,7 @@ export class Query {
       case '$lte':
       case '$ne':
       case '$eq': 
+      case '$like':
       case undefined: {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
         let sql = `(${this.littoJSON(p.field as string, p.operand)} ${formatOperator(p.operator || '$eq')} ?)`;
