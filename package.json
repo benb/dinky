@@ -28,13 +28,11 @@
     "typescript": "^2.0.3"
   },
   "dependencies": {
-    "@reactivex/rxjs": "^5.0.0-rc.4",
+    "rxjs": "^5.0.0-rc.4",
     "@types/uuid": "^2.0.29",
     "js-object-parser": "^1.0.1",
     "mongo-parse": "^1.1.0",
-    "otaat-repl": "^1.0.2",
-    "squeamish": "0.0.1",
-    "uuid": "^3.0.0",
-    "vorpal": "^1.11.4"
+    "squeamish": "^1.0.1",
+    "uuid": "^3.0.0"
   }
 }

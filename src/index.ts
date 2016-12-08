@@ -1,7 +1,7 @@
 import { Database, Statement, Transaction, TransactionOptions } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
-import * as Rx from '@reactivex/rxjs'; 
+import * as Rx from 'rxjs'; 
 import * as Bluebird from 'bluebird';
 import { Query } from './query';
 export { Query } from './query';
