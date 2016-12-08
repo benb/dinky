@@ -14,7 +14,7 @@ const operatorMap = {
   '$lt': '<',
   '$lte': '<=',
   '$ne': '!=',
-  '$not': "IS NOT",
+  '$not': "NOT",
   '$nin': "NOT IN", 
   '$in': "IN",
   '$like': "LIKE"
@@ -77,22 +77,25 @@ export class Query {
     }
   }
 
-  private partToString(p: QueryPart): QueryResult {
+  private partToString(p: QueryPart, upstreamOperator: string = ""): QueryResult {
     switch(p.operator) {
       case '$and':  {
         const res = p.parts.map(x => this.partToString(x));
-        const operands = ([] as Array<any>).concat(...res.map(x => x.operands));
+        const operands = ([] as Array<any>).concat(...res.map(x => x.operands, upstreamOperator));
         const sql = res.map(x=>x.sql).join(" AND ");
         return {sql, operands};
       }
       case '$or': { 
         const res = p.parts.map(x => this.partToString(x));
-        const operands = ([] as Array<any>).concat(...res.map(x => x.operands));
+        const operands = ([] as Array<any>).concat(...res.map(x => x.operands, upstreamOperator));
         const sql = res.map(x => x.sql).join(" OR ");
         return {sql, operands};
       }
       case '$not': 
-        throw new Error("$not is unsupported");
+        const res = p.parts.map(part => this.partToString(part, formatOperator(p.operator)));
+        const operands = ([] as Array<any>).concat(...res.map(x => x.operands, upstreamOperator));
+        const sql = res.map(x=>x.sql).join(" AND ");
+        return {sql, operands};
       case '$nin': 
       case '$in':  {
         if (!p.field) {throw new Error("Strange output in parsed query, expected field: " + p);}
@@ -100,12 +103,12 @@ export class Query {
         const operands = filterOperand(p.operand);
         const joinTable = uuid.v4();
         let join = `, json_each(${this.littoJSON(p.field as string, p.operand)}) as "${joinTable}"`;
-        let sql:string = `"${joinTable}".value ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
+        let sql:string = `"${joinTable}".value ${upstreamOperator} ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
 
         const table = this.arrayIndexes.get(p.field);
         if (table) {
           join = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
-          sql = `"${table}".value ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
+          sql = `"${table}".value ${upstreamOperator} ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
         }
 
         return {sql, operands, join};
@@ -119,7 +122,7 @@ export class Query {
       case '$like':
       case undefined: {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        let sql = `(${this.littoJSON(p.field as string, p.operand)} ${formatOperator(p.operator || '$eq')} ?)`;
+        let sql = `(${this.littoJSON(p.field as string)} ${upstreamOperator} ${formatOperator(p.operator || '$eq')} ?)`;
         const operands = filterOperand(p.operand);
         return {sql, operands};
       }
