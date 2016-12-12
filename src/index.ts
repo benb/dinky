@@ -419,7 +419,7 @@ export class Collection {
     if (doc[this.idField]) {
       const id:any = {};
       id[this.idField] = doc[this.idField];
-      return this.update(id, doc);
+      return this.update(id, doc, {upsert: true});
     } else {
       return this.insert(doc);
     }

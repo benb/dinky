@@ -388,3 +388,20 @@ test("null", async t => {
   t.deepEqual(falses, [{boolitem: false}], "false lookup works");
   t.deepEqual(nulls, [{something: "foo"}], "null lookup works");
 });
+
+test("save", async t => {
+  const store = await basicDatabase();
+  const test = await store.getCollection("test");
+  await test.save({_id: 'foo', other: 'bar'});
+  let retrieval = await test.findOne({_id: 'foo'});
+  t.is(retrieval.other, 'bar', "Should get back saved object");
+  await test.save({_id: 'foo', other: 'bar2'});
+
+  retrieval = await test.findOne({_id: 'foo'});
+  t.is(retrieval.other, 'bar2', "Should get back updated object");
+
+  await test.save({other: 'baz'});
+  retrieval = await test.findOne({other: 'baz'});
+  t.truthy(retrieval._id, "Should be inserted with an id");
+
+});
