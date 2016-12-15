@@ -102,14 +102,23 @@ export class Query {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
         const operands = filterOperand(p.operand);
         const joinTable = uuid.v4();
-        let join = `, json_each(${this.littoJSON(p.field as string, p.operand)}) as "${joinTable}"`;
-        let sql:string = `"${joinTable}".value ${upstreamOperator} ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
+        let join:string | undefined = `, json_each(${this.littoJSON(p.field as string, p.operand)}) as "${joinTable}"`;
+        let sql:string = `"${joinTable}".value ${upstreamOperator} ${formatOperator('$in')} ${formatOperand(p.operand)}`;
 
         const table = this.arrayIndexes.get(p.field);
         if (table) {
           join = `INNER JOIN "${table}" ON "${table}"._id = "${this.name}"._id`;
-          sql = `"${table}".value ${upstreamOperator} ${formatOperator(p.operator)} ${formatOperand(p.operand)}`;
+          //operator is '$in' regardless
+          //we handle '$nin' by inverting the matches, below
+          sql = `"${table}".value ${upstreamOperator} ${formatOperator('$in')} ${formatOperand(p.operand)}`;
         }
+
+        if (p.operator == '$nin') {
+          // WHERE _id NOT IN ( SELECT _id FROM people, json_each(people.document, '$.a') WHERE json_each.value IS 4);
+          sql = `"${this.name}"._id NOT IN ( SELECT "${this.name}"._id FROM "${this.name}" ${join} WHERE ${sql})`;
+          join = undefined;
+        }
+        console.dir({sql, operands, join}, {depth: null});
 
         return {sql, operands, join};
       }

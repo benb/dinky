@@ -200,13 +200,48 @@ test("Array $push and $pop", async (t) => {
   t.deepEqual(hobbies, dbHobbies, "Standard $pop works");
 });
 
+test("$nin", async t => {
+  for (let index of [true, false]) {
+    const store = await basicDatabase();
+    const people = await store.getCollection(awkwardString);
+    if (index) { await people.ensureArrayIndex('hobbies'); }
+
+    const nonSkateboarders = await people.find({'hobbies': {'$nin': ['skateboarding'] }});
+    console.log(nonSkateboarders);
+    const everyone = await people.find();
+    t.is(nonSkateboarders.length + 1, everyone.length, "Only one skateboarder");
+  }
+});
+
+test("Array $addToSet", async t => {
+  const store = await basicDatabase(true);
+  const people = await store.getCollection(awkwardString);
+  let homer: any;
+
+  for (let x of ["TV", "Beer", "Go Crazy"]) {
+    homer = await people.findOne({'firstname': 'Homer'});
+    t.is(homer.hobbies.indexOf(x), -1, "Should not have hobby to start");
+    await people.update({'firstname': 'Homer'}, {'$addToSet': {'hobbies': x}});
+    homer = await people.findOne({'firstname': 'Homer'});
+    t.not(homer.hobbies.indexOf(x), -1, "Should add to array");
+  }
+
+  const hobbiesCount = homer.hobbies.length;
+
+  for (let x of ["TV", "Beer", "Go Crazy"]) {
+    await people.update({'firstname': 'Homer'}, {'$addToSet': {'hobbies': x}});
+    homer = await people.findOne({'firstname': 'Homer'});
+    t.is(homer.hobbies.length, hobbiesCount, `Should not add to array ${homer.hobbies}`);
+  }
+
+});
+
 test("'complex' updates", async (t) => {
   for (let index of [true, false]) {
     const store = await basicDatabase();
     const people = await store.getCollection(awkwardString);
-    if (index) {
-      await people.ensureArrayIndex('hobbies');
-    }
+    if (index) { await people.ensureArrayIndex('hobbies'); }
+
     await people.update({hobbies : {'$in': ["boxcar racing"]}}, {'$push': {'hobbies' : 'TV'}}, {multi: true});
     const tvWatchers = await people.find({hobbies: {'$in': ['boxcar racing']} });
     t.is(tvWatchers.length, 2, "Correct number of entries updated");

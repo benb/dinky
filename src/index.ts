@@ -70,7 +70,7 @@ export class Store {
     this.logging = logging;
     if (this.logging) {
       this.database.sqlite.on('trace', console.log);
-      //logDatabase(this.database);
+      logDatabase(this.database);
     }
     this._metadata = await this.getCollection(metadataTableName);
     this.pool = new Set<Database>();
@@ -88,7 +88,7 @@ export class Store {
       const db = new Database(this.path);
       if (this.logging) {
         db.sqlite.on('trace', console.log);
-        //logDatabase(db);
+        logDatabase(db);
       }
       return db;
     }
@@ -539,6 +539,22 @@ export class Collection {
         args.unshift(val);
         //console.log(updateSQL, args);
         await t.runAsync(updateSQL, args);
+        keys.add(k);
+      }
+    }
+
+    if (update['$addToSet']) {
+      for (let k of Object.keys(update['$addToSet'])) {
+        if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
+
+        const myQ = {...q};
+        myQ[k] = {'$nin': [update['$addToSet'][k]]};
+        const updateSpec: any = {};
+        updateSpec['$push'] = {};
+        updateSpec['$push'][k] = update['$addToSet'][k];
+
+        await this._update(myQ, updateSpec, options);
+
         keys.add(k);
       }
     }
