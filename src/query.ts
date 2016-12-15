@@ -118,7 +118,6 @@ export class Query {
           sql = `"${this.name}"._id NOT IN ( SELECT "${this.name}"._id FROM "${this.name}" ${join} WHERE ${sql})`;
           join = undefined;
         }
-        console.dir({sql, operands, join}, {depth: null});
 
         return {sql, operands, join};
       }
