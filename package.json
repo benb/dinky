@@ -32,7 +32,7 @@
     "@types/uuid": "^2.0.29",
     "js-object-parser": "^1.0.1",
     "mongo-parse": "^1.1.0",
-    "squeamish": "^1.0.1",
+    "squeamish": "^1.1.0",
     "uuid": "^3.0.0"
   }
 }

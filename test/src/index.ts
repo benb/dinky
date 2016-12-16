@@ -3,7 +3,7 @@ import { Store } from '../../';
 import { test } from 'ava';
 import * as temp from 'temp';
 import * as uuid from 'uuid';
-import * as Rx from '@reactivex/rxjs';
+import * as Rx from 'rxjs';
 
 temp.track();
 
@@ -207,14 +207,13 @@ test("$nin", async t => {
     if (index) { await people.ensureArrayIndex('hobbies'); }
 
     const nonSkateboarders = await people.find({'hobbies': {'$nin': ['skateboarding'] }});
-    console.log(nonSkateboarders);
     const everyone = await people.find();
     t.is(nonSkateboarders.length + 1, everyone.length, "Only one skateboarder");
   }
 });
 
 test("Array $addToSet", async t => {
-  const store = await basicDatabase(true);
+  const store = await basicDatabase();
   const people = await store.getCollection(awkwardString);
   let homer: any;
 
