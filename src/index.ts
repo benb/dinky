@@ -1,4 +1,4 @@
-import { Database, Statement, Transaction, TransactionOptions } from 'squeamish';
+import { Database, Statement, Handle, TransactionOptions } from 'squeamish';
 import { containsClauses, filterClauses } from './util';
 import * as uuid from 'uuid';
 import * as Rx from 'rxjs'; 
@@ -50,7 +50,8 @@ export class Store {
   path: string;
   pool: Set<Database>;
   logging = false;
-  transaction?: Transaction;
+  handle: Handle;
+
   _metadata?: Collection;
 
   async getMetadata(): Promise<Collection> {
@@ -66,7 +67,8 @@ export class Store {
   async open(path: string, logging = false, journalMode = "WAL") {
     this.path = path;
     this.database = new Database(path);
-    await this.database.execAsync(`PRAGMA journal_mode=${journalMode};`);
+    this.handle = this.database;
+    await this.handle.execAsync(`PRAGMA journal_mode=${journalMode};`);
     this.logging = logging;
     if (this.logging) {
       this.database.sqlite.on('trace', console.log);
@@ -76,40 +78,18 @@ export class Store {
     this.pool = new Set<Database>();
   }
 
-  async getFromPool(): Promise<Database> {
-    if (this.transaction) {
-      throw new Error("Don't open a handle within a transaction!");
-    }
-    if (this.pool.size > 0 ){
-      const db = this.pool.values().next().value;
-      this.pool.delete(db);
-      return db;
-    } else {
-      const db = new Database(this.path);
-      if (this.logging) {
-        db.sqlite.on('trace', console.log);
-        logDatabase(db);
-      }
-      return db;
-    }
-  }
-
   async withinTransaction(fn:(s: Store) => Promise<void>, to?: TransactionOptions) {
     const s = new Store();
     s.path = this.path;
     s.database = this.database;
     s.logging = this.logging;
-    if (this.transaction) {
-      s.transaction = await this.transaction.beginTransaction();
-    } else {
-      const db = await this.getFromPool();
-      s.transaction = await db.beginTransaction(to);
-    }
+    const transaction = await this.handle.beginTransaction(to);
+    s.handle = transaction;
 
     await fn(s).then(() => {
-      if (s.transaction) { return s.transaction.commit(); }
+      return transaction.commit()
     }, (error) => {
-      if (s.transaction) { return s.transaction.rollback().then(() => { throw error; });}
+      return transaction.rollback().then(() => { throw error; });
     });
   }
 
@@ -148,12 +128,8 @@ export class Collection {
 
   private dbIdField = "_id";
 
-  get transaction() {
-    return this.store.transaction;
-  }
-
-  private getMainHandle() {
-    return this.transaction || this.store.database;
+  private getMainHandle(): Handle {
+    return this.store.handle;
   }
 
   private returnHandleToPool(db: Database) {
@@ -202,33 +178,39 @@ export class Collection {
     }
   }
 
-  async initialize() {
+  async initialize(): Promise<Collection> {
     if (this.initializedStatus == "uninitialized") {
       this.initializedStatus = "initializing";
-      const db = this.getMainHandle()
+      console.log("initializing");
+      const db:Handle = this.getMainHandle()
       await db.runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`)
+
       if (this.name != metadataTableName) {
         const metadataCollection = await this.store.getMetadata();
-        let metadata = await metadataCollection.findOne({_id: this.name});
+        await metadataCollection.withinTransaction(async metadataCollection => {
+          let metadata = await metadataCollection.findOne({_id: this.name});
 
-        if (!metadata) {
-          await metadataCollection.insert({_id: this.name, idField: this.dbIdField});
-          metadata = {};
-        }
-
-        if (this.idField) {
-          await metadataCollection.update({_id: this.name}, {$set: {'idField': this.idField}}, {upsert: true});
-        } else { 
-          if (metadata && metadata.idField) {
-            this.idField =  metadata.idField;
-          } else {
-            this.idField = this.dbIdField;
+          if (!metadata) {
+            metadata = {_id: this.name, idField: this.dbIdField}
+            await metadataCollection.insert(metadata);
           }
-        }
 
-        if (metadata) {
-          await this.refreshArrayIndexes(metadata.arrayIndexes);
-        }
+          if (this.idField) {
+            console.log("SETTING");
+            await metadataCollection.update({_id: this.name}, {$set: {'idField': this.idField}}, {upsert: true});
+            console.log("SET");
+          } else { 
+            if (metadata && metadata.idField) {
+              this.idField =  metadata.idField;
+            } else {
+              this.idField = this.dbIdField;
+            }
+          }
+
+          if (metadata) {
+            await this.refreshArrayIndexes(metadata.arrayIndexes);
+          }
+        }, {type: "IMMEDIATE"} );
       } else {
         this.idField = this.dbIdField;
       }
@@ -266,8 +248,7 @@ export class Collection {
       return;
     }
 
-    const t = this.transaction;
-    if (!t) {throw new Error("Need a transaction to ensureArrayIndex")};
+    const t = this.getMainHandle();
 
     const tableName = `${this.name}_${key}`;
     await t.runAsync(`CREATE TABLE IF NOT EXISTS "${tableName}" AS SELECT _id, json_each.* FROM "${this.name}", json_each(document, '$.${key}')`);
@@ -415,7 +396,7 @@ export class Collection {
     }
   }
 
-  save(doc: any) { 
+  save(doc: any): Promise<any> { 
     if (doc[this.idField]) {
       const id:any = {};
       id[this.idField] = doc[this.idField];
@@ -441,9 +422,8 @@ export class Collection {
   private async _update(q: any, update: any, options: UpdateSpec | DeleteSpec): Promise<void> {
 
     const query = this.queryFor(q);
-    const t = this.transaction;
-    if (!t) {throw new Error("update() should take place inside a transaction");}
-
+    const t = this.getMainHandle();
+  
     let whereSQL: string;
 
     let limit = ""
