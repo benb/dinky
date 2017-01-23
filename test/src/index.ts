@@ -42,6 +42,22 @@ test("Basic insertion and retrieval", async (t) => {
   await store.close();
 });
 
+test("Querying items that don't exist", async (t) => {
+  const store = await basicDatabase();
+  const people = await store.getCollection(awkwardString);
+
+  const allPeople:any[] = await people.find({firstname: "Milhouse"});
+
+  t.is(allPeople.length, 0, "Should have no results");
+
+  const milhouse = await people.findOne({firstname: "Milhouse"});
+
+  t.is(milhouse, null, "Should have no results");
+
+  await store.close();
+});
+
+
 test("Indexing", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection(awkwardString);
