@@ -18,7 +18,7 @@ async function tempDatabase(logging = false) {
 async function basicDatabase(logging = false, idField = "_id") {
   const store = await tempDatabase(logging);
 
-  await store.database.execAsync(`DROP TABLE IF EXISTS "${awkwardString}"`);
+  await store.handle.execAsync(`DROP TABLE IF EXISTS "${awkwardString}"`);
   const people = await store.getCollection(awkwardString, idField);
   await people.insertMany([
    {firstname: "Maggie", lastname: "Simpson", hobbies: ["dummies"]},

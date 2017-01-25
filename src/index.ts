@@ -46,7 +46,6 @@ export interface DeleteSpec {
 }
 
 export class Store { 
-  database: Database;
   path: string;
   pool: Set<Database>;
   logging = false;
@@ -66,13 +65,13 @@ export class Store {
 
   async open(path: string, logging = false, journalMode = "WAL") {
     this.path = path;
-    this.database = new Database(path);
-    this.handle = this.database;
+    const database = new Database(path);
+    this.handle = database;
     await this.handle.execAsync(`PRAGMA journal_mode=${journalMode};`);
     this.logging = logging;
     if (this.logging) {
-      this.database.sqlite.on('trace', console.log);
-      logDatabase(this.database);
+      database.sqlite.on('trace', console.log);
+      logDatabase(database);
     }
     this._metadata = await this.getCollection(metadataTableName);
     this.pool = new Set<Database>();
@@ -81,7 +80,6 @@ export class Store {
   async withinTransaction(fn:(s: Store) => Promise<void>, to?: TransactionOptions) {
     const s = new Store();
     s.path = this.path;
-    s.database = this.database;
     s.logging = this.logging;
     const transaction = await this.handle.beginTransaction(to);
     s.handle = transaction;
@@ -103,7 +101,9 @@ export class Store {
   }
 
   async close() {
-    return this.database.closeAsync();
+    if ((<Database>this.handle)) {
+      return (<Database>this.handle).closeAsync();
+    }
   }
 
 }
@@ -181,7 +181,6 @@ export class Collection {
   async initialize(): Promise<Collection> {
     if (this.initializedStatus == "uninitialized") {
       this.initializedStatus = "initializing";
-      console.log("initializing");
       const db:Handle = this.getMainHandle()
       await db.runAsync(`CREATE TABLE IF NOT EXISTS "${this.name}" (_id TEXT PRIMARY KEY, document JSON);`)
 
@@ -196,9 +195,7 @@ export class Collection {
           }
 
           if (this.idField) {
-            console.log("SETTING");
             await metadataCollection.update({_id: this.name}, {$set: {'idField': this.idField}}, {upsert: true});
-            console.log("SET");
           } else { 
             if (metadata && metadata.idField) {
               this.idField =  metadata.idField;
@@ -396,11 +393,12 @@ export class Collection {
     }
   }
 
-  save(doc: any): Promise<any> { 
+  async save(doc: any): Promise<any> { 
     if (doc[this.idField]) {
       const id:any = {};
       id[this.idField] = doc[this.idField];
-      return this.update(id, doc, {upsert: true});
+      await this.update(id, doc, {upsert: true});
+      return this.findOne(id);
     } else {
       return this.insert(doc);
     }

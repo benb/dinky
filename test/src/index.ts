@@ -18,7 +18,7 @@ async function tempDatabase(logging = false) {
 async function basicDatabase(logging = false, idField = "_id") {
   const store = await tempDatabase(logging);
 
-  await store.database.execAsync(`DROP TABLE IF EXISTS "${awkwardString}"`);
+  await store.handle.execAsync(`DROP TABLE IF EXISTS "${awkwardString}"`);
   const people = await store.getCollection(awkwardString, idField);
   await people.insertMany([
    {firstname: "Maggie", lastname: "Simpson", hobbies: ["dummies"]},
@@ -62,12 +62,12 @@ test("Indexing", async (t) => {
   const store = await basicDatabase();
   const people = await store.getCollection(awkwardString);
 
-  const badPlan = await store.database.allAsync(`EXPLAIN QUERY PLAN SELECT * from "${awkwardString}" ORDER BY json_extract(document, '$.firstname')`);
+  const badPlan = await store.handle.allAsync(`EXPLAIN QUERY PLAN SELECT * from "${awkwardString}" ORDER BY json_extract(document, '$.firstname')`);
   t.falsy((badPlan[0].detail as string).indexOf("USING INDEX") > -1, "Can't use index until created");
 
   await people.ensureIndex({firstname: 1, lastname: 1});
 
-  const plan = await store.database.allAsync(`EXPLAIN QUERY PLAN SELECT * from "${awkwardString}" ORDER BY json_extract(document, '$.firstname')`);
+  const plan = await store.handle.allAsync(`EXPLAIN QUERY PLAN SELECT * from "${awkwardString}" ORDER BY json_extract(document, '$.firstname')`);
 
   t.is(plan.length, 1, "One row to plan");
   t.truthy((plan[0].detail as string).indexOf("USING INDEX") > -1, "Should use index");
@@ -445,7 +445,9 @@ test("save", async t => {
   await test.save({_id: 'foo', other: 'bar'});
   let retrieval = await test.findOne({_id: 'foo'});
   t.is(retrieval.other, 'bar', "Should get back saved object");
-  await test.save({_id: 'foo', other: 'bar2'});
+
+  const foo = await test.save({_id: 'foo', other: 'bar2'});
+  t.is(foo.other, "bar2", "Save should return the object");
 
   retrieval = await test.findOne({_id: 'foo'});
   t.is(retrieval.other, 'bar2', "Should get back updated object");
