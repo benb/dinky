@@ -69,7 +69,7 @@ export class Query {
   nonJSONFields: {[field: string]: string};
   private _results: QueryResult[];
 
-  littoJSON(jsonPath: string, operand: any = {}) { 
+  dinkyJSON(jsonPath: string, operand: any = {}) { 
     if (this.nonJSONFields[jsonPath]) {
       return this.nonJSONFields[jsonPath];
     } else {
@@ -102,7 +102,7 @@ export class Query {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
         const operands = filterOperand(p.operand);
         const joinTable = uuid.v4();
-        let join:string | undefined = `, json_each(${this.littoJSON(p.field as string, p.operand)}) as "${joinTable}"`;
+        let join:string | undefined = `, json_each(${this.dinkyJSON(p.field as string, p.operand)}) as "${joinTable}"`;
         let sql:string = `"${joinTable}".value ${upstreamOperator} ${formatOperator('$in')} ${formatOperand(p.operand)}`;
 
         const table = this.arrayIndexes.get(p.field);
@@ -130,7 +130,7 @@ export class Query {
       case '$like':
       case undefined: {
         if (p.parts.length > 0) {throw new Error("Unsupported query part " + p)};
-        let sql = `(${this.littoJSON(p.field as string)} ${upstreamOperator} ${formatOperator(p.operator || '$eq')} ?)`;
+        let sql = `(${this.dinkyJSON(p.field as string)} ${upstreamOperator} ${formatOperator(p.operator || '$eq')} ?)`;
         const operands = filterOperand(p.operand);
         return {sql, operands};
       }

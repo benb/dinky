@@ -6,7 +6,7 @@ import * as Bluebird from 'bluebird';
 import { Query } from './query';
 export { Query } from './query';
 
-const metadataTableName = "litto_metadata";
+const metadataTableName = "dinky_metadata";
 
 function optOp(operator: string, value?: string | number): string {
   if (value && value.toString().trim().length > 0) {

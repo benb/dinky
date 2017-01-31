@@ -1,6 +1,6 @@
 {
-  "name": "litto",
-  "version": "0.0.1",
+  "name": "dinky",
+  "version": "1.0.0",
   "description": "Schemaless JSON document store backed by SQLite",
   "main": "dist/index.js",
   "typings": "dist/index",
