@@ -4,7 +4,8 @@ import * as uuid from 'uuid';
 import * as Rx from 'rxjs'; 
 import * as Bluebird from 'bluebird';
 import { Query } from './query';
-export { Query } from './query';
+
+export { Query };
 
 const metadataTableName = "dinky_metadata";
 
@@ -165,10 +166,10 @@ export class Collection {
 
   async withinTransaction(fn:(c: Collection) => Promise<void>, to?: TransactionOptions) {
     return this.store.withinTransaction(async s => {
-     const c = new Collection(s, this.name, this.idField, this.initializedStatus)
-     //TODO this needs to be sourced from a metadata table;
-     c.arrayIndexes = this.arrayIndexes;
-     await fn(c);
+      const c = new Collection(s, this.name, this.idField, this.initializedStatus)
+      //TODO this needs to be sourced from a metadata table;
+      c.arrayIndexes = this.arrayIndexes;
+      await fn(c);
     }, to);
   }
 
@@ -430,7 +431,7 @@ export class Collection {
 
     //DELETE 
     if (typeof update === 'string' && update.toLowerCase() == 'delete') {
-        operation = "DELETE";
+      operation = "DELETE";
     }
 
     if (operation == "UPDATE") {
@@ -440,7 +441,7 @@ export class Collection {
       }
     } else {
       const deleteOptions = options as DeleteSpec;
-        limit = deleteOptions.justOne ? "LIMIT 1" : "";
+      limit = deleteOptions.justOne ? "LIMIT 1" : "";
     }
 
     // Unless the sqlite database is compiled with SQLITE_ENABLE_UPDATE_DELETE_LIMIT
@@ -474,14 +475,14 @@ export class Collection {
         }
       }
     }
-    
+
     if (operation == "DELETE") {
-        const args = query.values;
-        const updateSQL = `DELETE FROM "${this.name}" ${optOp('WHERE', whereSQL)}`;
-        await t.runAsync(updateSQL, args);
-        return;
+      const args = query.values;
+      const updateSQL = `DELETE FROM "${this.name}" ${optOp('WHERE', whereSQL)}`;
+      await t.runAsync(updateSQL, args);
+      return;
     }
-    
+
     //operation == "UPDATE"
     const keys = new Set<string>();
     if (update['$inc']) {
@@ -557,44 +558,44 @@ export class Collection {
                     for (let v of val) {
                     values.push(v);
                     }*/
-      } else {
-        args.unshift(JSON.stringify(val));
-      }
-
-          await t.runAsync(updateSQL, args);
-
-          keys.add(k);
+        } else {
+          args.unshift(JSON.stringify(val));
         }
-      }
 
-      if (update['$pop']) {
-        for (let k of Object.keys(update['$pop'])) {
-          if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
-          const val = update['$pop'][k];
-          let updateSQL: string;
-          if (val === 1) {
-            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') ${optOp('WHERE', whereSQL)}`;
-          } else if (val === -1) {
-            updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[0]') ${optOp('WHERE', whereSQL)}`;
-          } else {
-            throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
-          }
-          const args:any[] = query.values;
-          await t.runAsync(updateSQL, args);
-          keys.add(k);
-        }
-      }
-
-      if (!containsClauses(update)) {
-        const updateSQL = `UPDATE "${this.name}" SET document = json(?) ${optOp('WHERE', whereSQL)}`;
-        const args = [this.strippedJSON(update), ...query.values];
         await t.runAsync(updateSQL, args);
-      } else {
-        if (keys.size == 0) {
-          throw new Error("Couldn't create update for field: " + update);
-        }
-      }
 
+        keys.add(k);
+      }
     }
+
+    if (update['$pop']) {
+      for (let k of Object.keys(update['$pop'])) {
+        if (keys.has(k)) { throw new Error("Can't apply multiple updates to single key: " +  k); }
+        const val = update['$pop'][k];
+        let updateSQL: string;
+        if (val === 1) {
+          updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[' || (json_array_length(json_extract(document, '$.${k}')) - 1) || ']') ${optOp('WHERE', whereSQL)}`;
+        } else if (val === -1) {
+          updateSQL = `UPDATE "${this.name}" SET document = json_remove(document, '$.${k}[0]') ${optOp('WHERE', whereSQL)}`;
+        } else {
+          throw new Error('Incorrect argument to $pop: ' + k + ' : ' + val);
+        }
+        const args:any[] = query.values;
+        await t.runAsync(updateSQL, args);
+        keys.add(k);
+      }
+    }
+
+    if (!containsClauses(update)) {
+      const updateSQL = `UPDATE "${this.name}" SET document = json(?) ${optOp('WHERE', whereSQL)}`;
+      const args = [this.strippedJSON(update), ...query.values];
+      await t.runAsync(updateSQL, args);
+    } else {
+      if (keys.size == 0) {
+        throw new Error("Couldn't create update for field: " + update);
+      }
+    }
+
   }
+}
 
